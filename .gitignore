@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment & Credentials
+*.local.env
+.env.*
+!*.example.env
+profile.yaml
+!profile.example.yaml
+credentials.json
+sheets-bot.json
+service-account*.json
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Playwright & Browsers
+.playwright/
+playwright-report/
+test-results/
+
+# Node / Extension
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dist/
+.output/
+.parcel-cache/
+
+# IDE & OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+.vscode/
+.idea/
+JobStager.app/
+
+# JobStager user data (never commit: resumes carry full contact details)
+resumes/
+*.db
+profile.yaml
+server.log

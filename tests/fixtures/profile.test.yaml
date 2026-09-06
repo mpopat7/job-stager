@@ -1,0 +1,68 @@
+# Fictional profile used by the test suite.
+#
+# Tests must never load profile.yaml: it is gitignored, absent on a fresh clone
+# and on CI, and holds a real person's data — assertions written against it pass
+# on one machine and fail everywhere else.
+
+candidate:
+  first_name: "Jordan"
+  last_name: "Rivera"
+  email: "jordan.rivera@example.com"
+  phone: "555-0100"
+  location: "Columbus, OH"
+  links:
+    linkedin: "https://www.linkedin.com/in/example"
+    github: "https://github.com/example"
+    portfolio: "https://example.com"
+
+disclosures:
+  work_authorization: "US Citizen"
+  requires_sponsorship: false
+  requires_future_sponsorship: false
+  gender: "Male"
+  race_ethnicity: "Asian"
+  veteran_status: "No"
+  disability_status: "No"
+  us_authorized: true
+  canada_authorized: false
+  open_to_relocation: true
+
+education:
+  school: "Ohio State University"
+  degree: "B.S. Computer Science"
+  major: "Computer Science"
+  minor: "Statistics"
+  graduation_year: 2028
+  graduation_month: "May"
+  gpa: "3.70"
+
+preferences:
+  address:
+    city: "Columbus"
+    state: "OH"
+    postal_code: "43210"
+    country: "United States"
+  availability:
+    start_date: "2028-05-15"
+    end_date: "2028-08-11"
+    term_label: "Summer 2028 (12-week)"
+  compensation:
+    hourly_rate: "45"
+  current_title: "Student"
+
+resumes:
+  default: "tests/fixtures/resume.pdf"
+
+tracker:
+  spreadsheet_id: ""
+  sheet_tab: "Applications"
+  auto_sync_sheets: false
+
+experience_highlights:
+  - topic: "Backend Engineering Internship"
+    summary: "Built batch ETL jobs in Python against a third-party API, cutting a weekly manual data pull from hours to minutes."
+    keywords: ["Python", "ETL", "REST APIs"]
+
+custom_answers:
+  "why us": "I want to work on problems where the data volume is large enough that the engineering decisions actually matter, and your team is doing that."
+  "hear about us": "Career site"

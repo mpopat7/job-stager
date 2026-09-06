@@ -1,0 +1,71 @@
+# JobStager candidate profile — worked example.
+#
+# Copy to profile.yaml and replace every value with your own. profile.yaml is
+# gitignored; this file is not, so keep it fictional. JobStager reads answers
+# from here rather than inventing them, so anything left blank is left blank on
+# the form too.
+
+candidate:
+  first_name: "Jordan"
+  last_name: "Rivera"
+  email: "jordan.rivera@example.com"
+  phone: "555-0100"
+  location: "Columbus, OH"
+  links:
+    linkedin: "https://www.linkedin.com/in/example"
+    github: "https://github.com/example"
+    portfolio: "https://example.com"
+
+# Self-identification. Left unset means the form's own "prefer not to say" is
+# used where one exists; fill these in only if you want them answered.
+disclosures:
+  work_authorization: "US Citizen"
+  requires_sponsorship: false
+  requires_future_sponsorship: false
+  gender: null
+  race_ethnicity: null
+  veteran_status: null
+  disability_status: null
+  us_authorized: true
+  canada_authorized: false
+  open_to_relocation: true
+
+education:
+  school: "Ohio State University"
+  degree: "B.S. Computer Science"
+  major: "Computer Science"
+  minor: null
+  graduation_year: 2028
+  graduation_month: "May"
+  gpa: null
+
+# Absolute paths to your resume PDFs. One per graduation-year variant if you
+# apply with more than one.
+resumes:
+  default: "~/Documents/resume.pdf"
+  grad_2028: "~/Documents/resume-2028.pdf"
+  grad_2029: "~/Documents/resume-2029.pdf"
+
+# Optional Google Sheets sync. Leave spreadsheet_id empty to stay on the local
+# SQLite tracker only.
+tracker:
+  spreadsheet_id: ""
+  sheet_tab: "Applications"
+  credentials_path: "~/.config/gcp/sheets-bot.json"
+  auto_sync_sheets: false
+
+# Ground truth for open-ended questions. The solver quotes these rather than
+# generating claims, so keep them factual.
+experience_highlights:
+  - topic: "Backend Engineering Internship"
+    summary: "Built batch ETL jobs in Python against a third-party API, cutting a weekly manual data pull from hours to minutes."
+    keywords: ["Python", "ETL", "REST APIs", "PostgreSQL"]
+
+  - topic: "Machine Learning Coursework"
+    summary: "Trained and evaluated scikit-learn classifiers on a public tabular dataset, reporting held-out accuracy and calibration."
+    keywords: ["Python", "scikit-learn", "evaluation"]
+
+# Matched against a question's text, longest sensible key first.
+custom_answers:
+  "why us": "I want to work on problems where the data volume is large enough that the engineering decisions actually matter, and your team is doing that."
+  "hear about us": "Career site"
