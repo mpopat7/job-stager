@@ -477,3 +477,90 @@ async def test_combobox_falls_back_to_a_narrower_query():
         assert await page.evaluate("() => window.__submitted") is None
 
         await browser.close()
+
+
+# Every option list here is worded the way a real ATS words it rather than as bare
+# Yes/No, because the resolver matches ranked answers against what a form offers and
+# that matching is what a substring check used to get wrong.
+SELECT_FORM_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Dropdown Form</title></head>
+<body>
+  <form id="select-form">
+    <div class="field">
+      <label for="auth">Are you legally authorized to work in the United States?</label>
+      <select id="auth" name="auth">
+        <option value="">Select...</option>
+        <option value="y">Yes, I am authorized to work in the US</option>
+        <option value="n">No, I am not authorized</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="sponsor">Will you now or in the future require visa sponsorship?</label>
+      <select id="sponsor" name="sponsor">
+        <option value="">Select...</option>
+        <option value="y">Yes</option>
+        <option value="n">No</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="grad">In what year will you graduate?</label>
+      <select id="grad" name="grad">
+        <option value="">Select...</option>
+        <option value="2027">2027</option>
+        <option value="2028">2028</option>
+        <option value="2029">2029</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="vet">Protected Veteran Status</label>
+      <select id="vet" name="vet">
+        <option value="">Select...</option>
+        <option value="prot">I identify as one or more of the classifications of a protected veteran</option>
+        <option value="notprot">I am not a protected veteran</option>
+        <option value="decline">I do not wish to answer</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="country">Country of Residence</label>
+      <select id="country" name="country">
+        <option value="">Select...</option>
+        <option value="ca">Canada</option>
+        <option value="us">United States of America</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="edu">Highest level of education completed</label>
+      <select id="edu" name="edu">
+        <option value="">Select...</option>
+        <option value="hs">High School</option>
+        <option value="ba">Bachelor's Degree</option>
+        <option value="ma">Master's Degree</option>
+      </select>
+    </div>
+  </form>
+</body>
+</html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_dropdowns_match_the_wording_a_form_actually_offers():
+    profile = load_test_profile()
+    adapter = GreenhouseAdapter()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(SELECT_FORM_HTML)
+
+        await adapter.smart_fill_form(page=page, frame=page.main_frame, profile=profile)
+
+        assert await page.input_value("#auth") == "y"
+        assert await page.input_value("#sponsor") == "n"
+        assert await page.input_value("#grad") == str(profile.education.graduation_year)
+        assert await page.input_value("#vet") == "notprot"
+        assert await page.input_value("#country") == "us"
+        assert await page.input_value("#edu") == "ba"
+        await browser.close()

@@ -13,6 +13,8 @@ from playwright.async_api import Page
 
 from core.config.schema import CandidateProfile
 from core.scrapers.base import ATSProvider
+from core.solver.questions import Kind, QKey
+from core.solver.resolver import AnswerResolver, pick_option
 
 logger = logging.getLogger(__name__)
 
@@ -482,8 +484,6 @@ class BaseStagingAdapter(ABC):
     ) -> tuple[int, bool]:
         """Intelligently scan and pre-fill all form controls across multiple progressive passes."""
         answers = answers or {}
-        c = profile.candidate
-        prefs = profile.preferences
 
         # Auto-detect target graduation cohort from posting text if candidate has multiple cohorts configured
         from core.config.grad_detector import detect_grad_year
@@ -509,6 +509,10 @@ class BaseStagingAdapter(ABC):
 
         profile.education.graduation_year = target_grad_year
         grad_year = target_grad_year
+        # Every control type below asks this one object what to put in a field, so a
+        # question means the same thing whether the form renders it as a pill, a
+        # radio, a dropdown or a text box.
+        resolver = AnswerResolver(profile, grad_year=grad_year, answers=answers)
         fields_filled = 0
         resume_attached = False
         processed_elements: set[str] = set()
@@ -580,102 +584,10 @@ class BaseStagingAdapter(ABC):
                     }""")
 
                     for bg in button_groups:
-                        q = bg['question'].lower()
-                        target_btn_idx = None
-
-                        # Work Authorization
-                        if re.search(r'\b(authorized to work|legally authorized|eligible to work|legal right to work|work authorization.*united states|authorized.*u\.?s\.?)\b', q) and not re.search(r'\b(require|need|sponsorship|future)\b', q):
-                            for b in bg['buttons']:
-                                if b['text'].lower() == 'yes' or b['text'].lower().startswith('yes'):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Sponsorship Required
-                        elif re.search(r'\b(require.*(sponsorship|sponsor|visa|work authorization)|will you.*require|future.*sponsor|sponsorship.*future)\b', q):
-                            for b in bg['buttons']:
-                                if b['text'].lower() == 'no' or b['text'].lower().startswith('no'):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Currently Enrolled
-                        elif re.search(r'\b(currently[\s_-]?enrolled|current student|are you currently enrolled|enrolled in an accredited)\b', q):
-                            for b in bg['buttons']:
-                                if b['text'].lower() == 'yes' or b['text'].lower().startswith('yes'):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Age (18+)
-                        elif re.search(r'\b(18 years|at least 18|legal age|18 or older|age)\b', q):
-                            for b in bg['buttons']:
-                                if b['text'].lower() in ('yes', '18+', '18 or older', '18-20') or b['text'].lower().startswith('yes'):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Prior Internship / Experience
-                        elif re.search(r'\b(prior internship|prior experience|co-op experience|previous experience|experience building|years of experience)\b', q):
-                            for b in bg['buttons']:
-                                if b['text'].lower() == 'yes' or b['text'].lower().startswith('yes'):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Relocation / Onsite
-                        elif re.search(r'\b(relocate|relocation|willing to relocate|open to relocate|on-site|work on-site)\b', q):
-                            for b in bg['buttons']:
-                                if b['text'].lower() == 'yes' or b['text'].lower().startswith('yes'):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Availability / Full-time / Summer
-                        elif re.search(r'\b(available full-time|available to work full-time|term duration|co-op duration|season)\b', q):
-                            for b in bg['buttons']:
-                                if any(k in b['text'].lower() for k in ('summer', '4-month', 'full-time', 'yes')):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Gender
-                        elif re.search(r'\b(gender|sex|gender[\s_-]?identity)\b', q):
-                            for b in bg['buttons']:
-                                if any(k in b['text'].lower() for k in ('male', 'man', 'cisgender man')) and 'female' not in b['text'].lower():
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Hispanic / Latino
-                        elif re.search(r'\b(hispanic|latino)\b', q):
-                            for b in bg['buttons']:
-                                if b['text'].lower() in ('no', 'not hispanic') or b['text'].lower().startswith('no'):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Race / Ethnicity
-                        elif re.search(r'\b(race|ethnicity|ethnic[\s_-]?origin|demographic)\b', q):
-                            for b in bg['buttons']:
-                                if 'asian' in b['text'].lower():
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Veteran
-                        elif re.search(r'\b(veteran|military[\s_-]?status|protected[\s_-]?veteran)\b', q):
-                            for b in bg['buttons']:
-                                if any(k in b['text'].lower() for k in ('not a protected veteran', 'not a veteran', 'i am not', 'no')):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Disability
-                        elif re.search(r'\b(disability|handicap|impairment)\b', q):
-                            for b in bg['buttons']:
-                                if any(k in b['text'].lower() for k in ('no', 'do not have a disability', 'no disability')):
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Graduation Year
-                        elif re.search(r'\b(graduation year|grad year|graduate in|year will you graduate)\b', q):
-                            for b in bg['buttons']:
-                                if str(grad_year) in b['text']:
-                                    target_btn_idx = b['idx']
-                                    break
-                        # Custom answer matching
-                        elif answers:
-                            for q_k, ans_v in answers.items():
-                                if q_k.lower() in q:
-                                    for b in bg['buttons']:
-                                        if ans_v.lower() in b['text'].lower():
-                                            target_btn_idx = b['idx']
-                                            break
-                        # General Yes/No screening fallback
-                        elif len(bg['buttons']) == 2 and set(b['text'].lower() for b in bg['buttons']) == {'yes', 'no'}:
-                            target_val = 'no' if any(bad in q for bad in ('felony', 'convict', 'crime', 'terminate', 'fired')) else 'yes'
-                            for b in bg['buttons']:
-                                if b['text'].lower() == target_val:
-                                    target_btn_idx = b['idx']
-                                    break
+                        texts = [b['text'] for b in bg['buttons']]
+                        bg_ans = resolver.resolve(bg['question'], Kind.BUTTON, offered=texts)
+                        chosen = pick_option(bg_ans.candidates, texts) if bg_ans else None
+                        target_btn_idx = texts.index(chosen) if chosen is not None else None
 
                         if target_btn_idx is not None:
                             target_info = bg['buttons'][target_btn_idx]
@@ -825,51 +737,10 @@ class BaseStagingAdapter(ABC):
 
                         # 2. Radio Buttons
                         if t == 'radio':
-                            target_checked = False
-                            # Work Authorization (Legal right to work in US)
-                            if re.search(r'\b(authorized to work|legally authorized|eligible to work|legal right to work|work authorization.*united states|authorized.*u\.?s\.?)\b', q_desc) and not re.search(r'\b(require|need|sponsorship|future)\b', q_desc):
-                                if opt_desc.startswith('yes') or opt_desc in ('yes', 'y'):
-                                    target_checked = True
-                            # Visa Sponsorship Required (Candidate is US citizen, doesn't require sponsor)
-                            elif re.search(r'\b(require.*(sponsorship|sponsor|visa|work authorization)|will you.*require|future.*sponsor|sponsorship.*future)\b', q_desc):
-                                if opt_desc.startswith('no') or opt_desc in ('no', 'n'):
-                                    target_checked = True
-                            # Currently Enrolled
-                            elif re.search(r'\b(currently[\s_-]?enrolled|current student|are you currently enrolled|enrolled in an accredited)\b', q_desc):
-                                if opt_desc.startswith('yes') or opt_desc in ('yes', 'y'):
-                                    target_checked = True
-                            # Age (18+)
-                            elif re.search(r'\b(18 years|at least 18|legal age|18 or older|age)\b', q_desc):
-                                if opt_desc.startswith('yes') or opt_desc in ('yes', 'y', '18-20', '18 or older', '18+'):
-                                    target_checked = True
-                            # Relocation
-                            elif re.search(r'\b(open to relocate|relocation|willing to relocate)\b', q_desc):
-                                if opt_desc.startswith('yes') or opt_desc in ('yes', 'y'):
-                                    target_checked = True
-                            # Gender
-                            elif re.search(r'\b(gender|sex|gender[\s_-]?identity)\b', q_desc):
-                                if re.search(r'\b(male|cisgender[\s_-]?man)\b', opt_desc) and not 'female' in opt_desc:
-                                    target_checked = True
-                            # Race / Ethnicity
-                            elif re.search(r'\b(race|ethnicity|ethnic[\s_-]?origin|demographic)\b', q_desc):
-                                if re.search(r'\b(asian|asian[\s_-]?american)\b', opt_desc):
-                                    target_checked = True
-                            # Veteran Status
-                            elif re.search(r'\b(veteran|military[\s_-]?status|protected[\s_-]?veteran)\b', q_desc):
-                                if re.search(r'\b(not a veteran|not a protected veteran|not a military veteran|i am not|no\b)\b', opt_desc):
-                                    target_checked = True
-                            # Disability Status
-                            elif re.search(r'\b(disability|handicap|physical[\s_-]?or[\s_-]?mental[\s_-]?impairment)\b', q_desc):
-                                if re.search(r'\b(no|i do not have a disability|i don\'t have a disability|no disability)\b', opt_desc):
-                                    target_checked = True
-                            # Source / Referral
-                            elif re.search(r'\b(how did you hear|referral|source|where did you hear)\b', q_desc):
-                                if re.search(r'\b(linkedin|career|company website|job board|internet|website)\b', opt_desc):
-                                    target_checked = True
-                            # Experience
-                            elif re.search(r'\b(years of experience|experience level|prior experience)\b', q_desc):
-                                if re.search(r'\b(1-2|0-1|1\+?|entry)\b', opt_desc):
-                                    target_checked = True
+                            radio_ans = resolver.resolve(q_desc, Kind.RADIO)
+                            target_checked = bool(radio_ans) and pick_option(
+                                radio_ans.candidates, [opt_desc]
+                            ) is not None
 
                             if target_checked and not info['checked']:
                                 if await self.check_input(current_frame, el, info):
@@ -883,36 +754,18 @@ class BaseStagingAdapter(ABC):
 
                         # 3. Checkboxes (Agreements, policies, declarations, demographics, Yes/No boxes)
                         if t == 'checkbox':
-                            target_check = False
-                            # Work authorization question with Yes / No checkboxes (e.g. Greenhouse)
-                            if re.search(r'\b(authorized to work|legally authorized|eligible to work|legal right to work)\b', q_desc):
-                                if opt_desc.startswith('yes') or opt_desc in ('yes', 'y'):
-                                    target_check = True
-                                elif opt_desc.startswith('no'):
-                                    target_check = False
-                            # Sponsorship question with Yes / No checkboxes
-                            elif re.search(r'\b(require.*(sponsorship|sponsor|visa)|future.*sponsor)\b', q_desc):
-                                if opt_desc.startswith('no') or opt_desc in ('no', 'n'):
-                                    target_check = True
-                                elif opt_desc.startswith('yes'):
-                                    target_check = False
-                            # Onsite / relocation agreement
-                            elif re.search(r'\b(on-site|work on-site|relocate|relocation)\b', q_desc):
-                                if opt_desc.startswith('yes') or opt_desc in ('yes', 'y') or not opt_desc:
-                                    target_check = True
-                            # How did you hear
-                            elif re.search(r'\b(how did you hear|referral|source)\b', q_desc):
-                                if re.search(r'\b(linkedin|company website|website|career)\b', opt_desc):
-                                    target_check = True
-                            # Demographic race
-                            elif re.search(r'\b(race|ethnicity)\b', q_desc) and re.search(r'\b(asian)\b', opt_desc):
-                                target_check = True
-                            # Availability / Term
-                            elif re.search(r'\b(summer|full[\s_-]?time|4-month|12-week)\b', opt_desc):
-                                target_check = True
-                            # Agreements, policies, declarations, consent
-                            elif re.search(r'\b(certify|certif|agree|terms|condition|privacy|declaration|policy|attest|consent|authorized|acknowledge)\b', q_desc):
-                                target_check = True
+                            cb_ans = resolver.resolve(q_desc, Kind.CHECKBOX)
+                            if cb_ans.is_consent or not opt_desc:
+                                # Either the label is the agreement itself, or there is no
+                                # label at all; either way the question is the whole of
+                                # what the box asks and ticking it is the answer.
+                                target_check = bool(cb_ans)
+                            elif cb_ans:
+                                target_check = pick_option(cb_ans.candidates, [opt_desc]) is not None
+                            else:
+                                # Some forms list availability as a bare row of boxes with
+                                # no question above them; the label is all there is to read.
+                                target_check = resolver.wants_term_option(opt_desc)
 
                             if target_check and not info['checked']:
                                 if await self.check_input(current_frame, el, info):
@@ -927,60 +780,19 @@ class BaseStagingAdapter(ABC):
                         # 4. Select Dropdowns (Standard HTML <select>)
                         if tag == 'select':
                             opts = await el.query_selector_all('option')
-                            target_opt = None
-                            if re.search(r'\b(authorized to work|legally authorized|eligible to work|legal right to work)\b', q_desc) and not re.search(r'\b(require|need|sponsorship)\b', q_desc):
-                                target_opt = 'yes'
-                            elif re.search(r'\b(require.*(sponsorship|sponsor|visa|work authorization)|will you.*require|future.*sponsor)\b', q_desc):
-                                target_opt = 'no'
-                            elif re.search(r'\b(year will you graduate|graduation[\s_-]?year|grad[\s_-]?year|expected[\s_-]?graduation)\b', q_desc):
-                                target_opt = str(grad_year)
-                            elif re.search(r'\b(graduation[\s_-]?month|grad[\s_-]?month)\b', q_desc):
-                                target_opt = 'may'
-                            elif re.search(r'\b(currently[\s_-]?enrolled|current student|are you currently enrolled)\b', q_desc):
-                                target_opt = 'yes'
-                            elif re.search(r'\b(18 years|at least 18|legal age|18 or older)\b', q_desc):
-                                target_opt = 'yes'
-                            elif re.search(r'\b(prior internship|prior experience|co-op experience)\b', q_desc):
-                                target_opt = 'yes'
-                            elif re.search(r'\b(open to relocate|relocation|willing to relocate|on-site)\b', q_desc):
-                                target_opt = 'yes'
-                            elif re.search(r'\b(which onsite|onsite location)\b', q_desc):
-                                target_opt = (prefs.locations_ranked[0].lower() if prefs.locations_ranked else None)
-                            elif re.search(r'\b(season|intern season|term duration)\b', q_desc):
-                                target_opt = 'summer'
-                            elif re.search(r'\bgender\b', q_desc):
-                                target_opt = 'male'
-                            elif re.search(r'\b(hispanic|latino)\b', q_desc):
-                                target_opt = 'no'
-                            elif re.search(r'\b(race|ethnicity)\b', q_desc):
-                                target_opt = 'asian'
-                            elif re.search(r'\b(veteran|military)\b', q_desc):
-                                target_opt = 'not a veteran'
-                            elif re.search(r'\bdisability\b', q_desc):
-                                target_opt = 'no'
-                            elif re.search(r'\bcountry\b', q_desc):
-                                target_opt = (prefs.address.country or '').lower() or None
-                            elif re.search(r'\b(state|province|region)\b', q_desc):
-                                target_opt = (prefs.address.state or '').lower() or None
-                            elif re.search(r'\b(highest level of education|education level|degree)\b', q_desc):
-                                target_opt = 'bachelor'
-                            elif re.search(r'\b(how did you hear|referral|source)\b', q_desc):
-                                target_opt = (prefs.referral_source or '').lower() or None
-                            elif re.search(r'\b(school|university|college|post secondary)\b', q_desc):
-                                target_opt = 'indiana'
+                            opt_texts = [(await o.inner_text()).strip() for o in opts]
+                            sel_answer = resolver.resolve(q_desc, Kind.SELECT, offered=opt_texts)
+                            target_opt = pick_option(sel_answer.candidates, opt_texts)
 
-                            if target_opt:
-                                for opt in opts:
-                                    opt_text = (await opt.inner_text()).lower().strip()
-                                    if target_opt in opt_text:
-                                        val = await opt.get_attribute('value')
-                                        if val is not None:
-                                            await el.select_option(val)
-                                            fields_filled += 1
-                                            pass_filled += 1
-                                            processed_elements.add(el_key)
-                                            logger.info(f"Selected option in dropdown {info['id'] or info['name']}: {target_opt}")
-                                            break
+                            if target_opt is not None:
+                                opt = opts[opt_texts.index(target_opt)]
+                                val = await opt.get_attribute('value')
+                                if val is not None:
+                                    await el.select_option(val)
+                                    fields_filled += 1
+                                    pass_filled += 1
+                                    processed_elements.add(el_key)
+                                    logger.info(f"Selected option in dropdown {info['id'] or info['name']}: {target_opt}")
                             continue
 
                         # 5. Autocomplete / React-Select / Combobox / Custom Dropdown Controls
@@ -1022,48 +834,13 @@ class BaseStagingAdapter(ABC):
                                 processed_elements.add(el_key)
                                 continue
 
-                            cb_text = None
-                            if re.search(r'\b(prior internship|prior experience|co-op experience)\b', q_desc):
-                                cb_text = 'Yes'
-                            elif re.search(r'\b(year will you graduate|graduation[\s_-]?year|grad[\s_-]?year|expected[\s_-]?graduation)\b', q_desc):
-                                cb_text = str(grad_year)
-                            elif re.search(r'\b(require.*(sponsorship|sponsor|visa|work authorization)|future.*sponsor|sponsorship.*future)\b', q_desc):
-                                cb_text = 'No'
-                            elif re.search(r'\b(authorized to work|legally authorized|eligible to work|legal right to work)\b', q_desc):
-                                cb_text = 'Yes'
-                            elif re.search(r'\b(relocation|open to relocate|willing to relocate)\b', q_desc):
-                                cb_text = 'Yes'
-                            elif re.search(r'\b(which onsite|onsite location)\b', q_desc):
-                                cb_text = prefs.locations_ranked or None
-                            elif re.search(r'\b(intern season|season)\b', q_desc):
-                                cb_text = prefs.availability.term_label or 'Summer'
-                            elif re.search(r'\b(gender|sex)\b', q_desc):
-                                cb_text = 'Male'
-                            elif re.search(r'\b(hispanic|latino)\b', q_desc):
-                                cb_text = 'No'
-                            elif re.search(r'\b(veteran|military[\s_-]?status|protected[\s_-]?veteran)\b', q_desc):
-                                cb_text = 'I am not a protected veteran'
-                            elif re.search(r'\b(disability|handicap|impairment)\b', q_desc):
-                                cb_text = 'No, I do not have a disability'
-                            elif re.search(r'\bcountry\b', q_desc):
-                                cb_text = [prefs.address.country, 'United States of America', 'USA']
-                            elif re.search(r'\b(state|province|region)\b', q_desc) and not any(k in q_desc for k in ['school', 'education']):
-                                cb_text = prefs.address.state or None
-                            elif re.search(r'\b(location|city|current[\s_-]?address|where do you plan)\b', q_desc) and not any(k in q_desc for k in ['school', 'education']):
-                                cb_text = prefs.location_queries() or None
-                            elif re.search(r'\b(school|university|college)\b', q_desc):
-                                cb_text = profile.education.school
-                            elif re.search(r'\bdegree\b', q_desc):
-                                cb_text = 'Bachelor of Science'
-                            elif re.search(r'\b(major|discipline)\b', q_desc):
-                                cb_text = 'Computer Science'
-                            elif re.search(r'\b(how did you hear|referral|source)\b', q_desc):
-                                cb_text = prefs.referral_source
-                            elif answers:
-                                for q_k, ans_v in answers.items():
-                                    if q_k.lower() in q_desc:
-                                        cb_text = ans_v
-                                        break
+                            cb_answer = resolver.resolve(q_desc, Kind.COMBOBOX)
+                            cb_text = cb_answer.candidates or None
+                            if cb_answer.needs_attention:
+                                await self.flag_for_attention(
+                                    el, (info.get('question') or info['label']
+                                         or 'Unnamed dropdown')[:60]
+                                )
 
                             if cb_text:
                                 ok = await self.fill_combobox(
@@ -1090,108 +867,19 @@ class BaseStagingAdapter(ABC):
                                 continue
 
                         # 6. Text inputs, email, tel, url, number, textareas
-                        val = None
-                        if re.search(r'\b(first[\s_-]?name|given[\s_-]?name|firstname)\b', desc) and not re.search(r'\blast\b', desc):
-                            val = c.first_name
-                        elif re.search(r'\b(last[\s_-]?name|family[\s_-]?name|surname|lastname)\b', desc):
-                            val = c.last_name
-                        elif re.search(r'\b(full[\s_-]?name|legal[\s_-]?name)\b', desc) or (re.search(r'\bname\b', desc) and not any(x in desc for x in ['first', 'last', 'user', 'file', 'company', 'school', 'preferred', 'middle', 'login'])):
-                            val = c.full_name
-                        elif re.search(r'\bpreferred[\s_-]?name\b', desc):
-                            val = c.preferred_name or c.first_name
-                        elif re.search(r'\bpronoun\b', desc):
-                            val = prefs.pronouns
-                        elif t == 'email' or re.search(r'\bemail\b', desc):
-                            val = c.email
-                        elif t == 'tel' or re.search(r'\b(phone|mobile|cell|telephone)\b', desc):
-                            val = c.phone
-                        elif re.search(r'\bcountry\b', desc):
-                            val = prefs.address.country
-                        elif re.search(r'\b(address[\s_-]?line[\s_-]?1|street[\s_-]?address)\b', desc):
-                            val = prefs.address.street
-                        elif re.search(r'\b(which city|current[\s_-]?city|city)\b', desc) and not any(k in desc for k in ['school', 'job']):
-                            val = prefs.address.city
-                        elif re.search(r'\b(state|province|region)\b', desc) and not any(k in desc for k in ['school', 'job']):
-                            val = prefs.address.state
-                        elif re.search(r'\b(zip|postal[\s_-]?code|postcode)\b', desc):
-                            val = prefs.address.postal_code
-                        elif re.search(r'\b(location|where do you plan|current[\s_-]?address)\b', desc) and not any(k in desc for k in ['school', 'job']):
-                            val = prefs.address.one_line()
-                        elif re.search(r'\b(currently[\s_-]?enrolled|current student|are you currently enrolled)\b', desc):
-                            val = 'Yes'
-                        elif re.search(r'\b(school|university|college|institution)\b', desc) and not 'high school' in desc:
-                            val = profile.education.school
-                        elif re.search(r'\bdegree\b', desc) and not re.search(r'\b(are you|enrolled)\b', desc):
-                            val = profile.education.degree
-                        elif re.search(r'\b(major|discipline|field[\s_-]?of[\s_-]?study)\b', desc):
-                            val = profile.education.major
-                        elif re.search(r'\bminor\b', desc):
-                            val = profile.education.minor or ''
-                        elif re.search(r'\bgpa\b|\bgrade[\s_-]?point\b', desc):
-                            val = str(profile.education.gpa)
-                        elif re.search(r'\b(graduation[\s_-]?date|expected[\s_-]?grad)\b', desc):
-                            val = f"May {grad_year}"
-                        elif re.search(r'\b(graduation[\s_-]?year|grad[\s_-]?year|expected[\s_-]?graduation)\b', desc):
-                            val = str(grad_year)
-                        elif re.search(r'\b(graduation[\s_-]?month|grad[\s_-]?month)\b', desc):
-                            val = profile.education.graduation_month
-                        elif re.search(r'\b(international student|work permit|citizenship)\b', desc):
-                            val = "US Citizen, authorized to work with no sponsorship or visa required"
-                        elif re.search(r'\b(ideal term duration|term duration|co-op duration)\b', desc):
-                            val = prefs.availability.term_label
-                        elif re.search(r'\blinkedin\b', desc):
-                            val = c.links.linkedin
-                        elif re.search(r'\bgithub\b', desc):
-                            val = c.links.github
-                        elif re.search(r'\b(website|portfolio|personal[\s_-]?site)\b', desc):
-                            val = c.links.portfolio or c.links.github
-                        elif re.search(r'\b(start[\s_-]?date|earliest[\s_-]?start|available[\s_-]?to[\s_-]?start|availability)\b', desc):
-                            val = prefs.availability.formatted(prefs.availability.start_date)
-                        elif re.search(r'\b(end[\s_-]?date|available[\s_-]?until)\b', desc):
-                            val = prefs.availability.formatted(prefs.availability.end_date)
-                        elif re.search(r'\b(salary|compensation|desired[\s_-]?pay|pay[\s_-]?expectation|hourly[\s_-]?rate)\b', desc):
-                            rate = prefs.compensation.hourly_rate
-                            val = rate if (rate and t == 'number') else (f"${rate}/hr" if rate else prefs.compensation.note)
-                        elif re.search(r'\b(current[\s_-]?company|employer|current[\s_-]?employer|organization|org)\b', desc) and not any(k in desc for k in ['school', 'education']):
-                            val = profile.education.school
-                        elif re.search(r'\b(current[\s_-]?title|current[\s_-]?role|job[\s_-]?title)\b', desc) and not any(k in desc for k in ['school', 'education']):
-                            val = prefs.current_title
+                        # Input type is stronger evidence than any label: a type=email
+                        # box is an email box whatever its id says.
+                        typed = {'email': 'email address', 'tel': 'phone number'}.get(t, '')
+                        ans = resolver.resolve(f"{typed} {desc}".strip(), Kind.TEXT)
+                        val = ans.text
 
-                        # Custom question answering from solver answers or profile custom_answers
-                        if not val and answers:
-                            for q_key, ans_text in answers.items():
-                                if q_key.lower() in desc or (len(q_key) > 5 and q_key.lower() in info['label'].lower()):
-                                    val = ans_text
-                                    break
-
-
-                        if not val and profile.custom_answers:
-                            for c_key, c_val in profile.custom_answers.items():
-                                if c_key.lower() in desc:
-                                    val = c_val
-                                    break
-
-                        # Contextual fallbacks for open-ended textareas
-                        if not val and (re.search(r'\b(tell us|why|excite|interest|share|describe|about yourself|statement|cover|note|anything else)\b', desc) or (tag == 'textarea' and info['label'])):
-                            # Sourced from the profile, never hardcoded: a canned blurb
-                            # about someone else is worse than leaving the box empty.
-                            if re.search(r'\b(project|built|code|work sample|portfolio)\b', desc):
-                                val = " ".join(
-                                    h.summary for h in profile.experience_highlights[:2] if h.summary
-                                ) or None
-                            else:
-                                val = next(
-                                    (v for k, v in profile.custom_answers.items()
-                                     if k.lower() in ("why us", "about", "about me")),
-                                    None,
-                                )
-
-                        # A personal field whose preference has never been filled in would
-                        # otherwise be left silently blank, which reads as "nothing to answer".
-                        if not val and re.search(
-                            r'\b(address|street|city|zip|postal|pronoun|salary|compensation|'
-                            r'hourly|start[\s_-]?date|end[\s_-]?date)\b', desc
+                        if not val and (
+                            ans.key is QKey.OPEN_RESPONSE
+                            or (tag == 'textarea' and info['label'])
                         ):
+                            val = resolver.open_response(desc).text
+
+                        if ans.needs_attention and not val:
                             await self.flag_for_attention(
                                 el, (info['label'] or info['name'] or 'Unnamed field')[:60]
                             )

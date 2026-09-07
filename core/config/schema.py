@@ -24,6 +24,9 @@ class CandidateLinks(BaseModel):
 class CandidateInfo(BaseModel):
     first_name: str
     last_name: str
+    # Forms ask for this separately; without the field the fill layer raised on
+    # every profile and the error was swallowed, leaving the box blank.
+    preferred_name: Optional[str] = None
     email: str
     phone: str
     location: str  # e.g. "Bloomington, IN"

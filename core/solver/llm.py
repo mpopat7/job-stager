@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from typing import Dict, List, Optional
+from typing import Optional
 import httpx
 
 from core.config.schema import CandidateProfile
-from core.scrapers.base import FormField
+from core.scrapers.base import FieldType, FormField
 from core.solver.prompts import SYSTEM_PROMPT, build_question_prompt
+from core.solver.questions import Kind
+from core.solver.resolver import AnswerResolver, pick_option
 
 logger = logging.getLogger(__name__)
+
+_KIND_BY_FIELD_TYPE = {
+    FieldType.SELECT: Kind.SELECT,
+    FieldType.MULTISELECT: Kind.SELECT,
+    FieldType.RADIO: Kind.RADIO,
+    FieldType.CHECKBOX: Kind.CHECKBOX,
+}
 
 
 class QuestionSolver:
@@ -20,89 +28,22 @@ class QuestionSolver:
 
     def __init__(self, profile: CandidateProfile):
         self.profile = profile
+        self.resolver = AnswerResolver(profile)
 
     def answer_heuristic(self, question: FormField) -> Optional[str]:
-        """Check for direct matches against candidate disclosures, education, or custom answers."""
-        q_label = question.label.lower()
+        """Answer from the profile alone, or None if nothing there covers the question.
 
-        # 1. Custom answers dictionary check
-        for key, ans in self.profile.custom_answers.items():
-            if key.lower() in q_label:
-                return ans
-
-        # 2. Work Authorization / Legal Status
-        if any(k in q_label for k in ["authorized to work", "legally authorized", "eligible to work", "work authorization"]):
-            if question.options:
-                for opt in question.options:
-                    if opt.lower() in ["yes", "authorized", "us citizen"]:
-                        return opt
-            return "Yes"
-
-        # 3. Sponsorship
-        if any(k in q_label for k in ["sponsorship", "visa", "future require", "require now or in the future"]):
-            if question.options:
-                for opt in question.options:
-                    if opt.lower() in ["no", "will not require"]:
-                        return opt
-            return "No"
-
-        # 4. Relocation
-        if "relocate" in q_label or "open to relocation" in q_label:
-            if question.options:
-                for opt in question.options:
-                    if "yes" in opt.lower():
-                        return opt
-            return "Yes"
-
-        # 5. Preferred Name
-        if "preferred name" in q_label or "nickname" in q_label:
-            return self.profile.candidate.first_name
-
-        # 6. Pronouns
-        if "pronoun" in q_label:
-            if question.options:
-                for opt in question.options:
-                    if "he/him" in opt.lower():
-                        return opt
-            return "He/Him"
-
-        # 7. Portfolio / Links / GitHub / LinkedIn
-        if any(k in q_label for k in ["linkedin", "github", "portfolio", "personal website"]):
-            c_links = self.profile.candidate.links
-            found_links = [l for l in [c_links.linkedin, c_links.github, c_links.portfolio] if l]
-            return " | ".join(found_links) if found_links else ""
-
-        # 8. Deadlines / Competing offers
-        if "deadline" in q_label or "offer deadline" in q_label:
-            return "None currently."
-
-        # 9. Test scores (SAT/ACT)
-        if "sat" in q_label or "act score" in q_label:
-            return "N/A"
-
-        # 10. Graduation Year / Date
-        if "graduation" in q_label or "grad year" in q_label or "anticipated graduation" in q_label:
-            grad_year = str(self.profile.education.graduation_year)
-            if question.options:
-                for opt in question.options:
-                    if grad_year in opt:
-                        return opt
-            return f"{self.profile.education.graduation_month} {grad_year}"
-
-        # 11. School / University
-        if "university" in q_label or "college" in q_label or "school" in q_label:
-            school = self.profile.education.school
-            if question.options and school:
-                for opt in question.options:
-                    if school.lower() in opt.lower():
-                        return opt
-            return school
-
-        # 12. GPA
-        if "gpa" in q_label:
-            return self.profile.education.gpa
-
-        return None
+        The whole taxonomy lives in `core.solver.resolver`; this is the CLI's way in.
+        """
+        kind = _KIND_BY_FIELD_TYPE.get(question.field_type, Kind.TEXT)
+        offered = list(question.options) if question.options else None
+        ans = self.resolver.resolve(question.label, kind, offered=offered)
+        if not ans:
+            return None
+        if offered:
+            # A form that lists its options wants one of them back verbatim.
+            return pick_option(ans.candidates, offered)
+        return ans.text
 
     async def solve(self, question: FormField) -> str:
         """Solve a question using heuristics first, falling back to LLM if available."""
