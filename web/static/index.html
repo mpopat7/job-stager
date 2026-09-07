@@ -44,21 +44,23 @@
 
 
     <!-- TABS -->
-    <nav class="flex items-center gap-1 border-b border-[#27272a] font-mono text-xs" role="tablist">
-      <button role="tab" data-tab="jobs" onclick="setTab('jobs')"
-        class="tab-btn px-3 py-2 -mb-px border-b-2 border-emerald-500 text-white transition">Jobs</button>
-      <button role="tab" data-tab="tracker" onclick="setTab('tracker')"
-        class="tab-btn px-3 py-2 -mb-px border-b-2 border-transparent text-[#a1a1aa] hover:text-white transition">Tracker</button>
-      <button role="tab" data-tab="settings" onclick="setTab('settings')"
+    <nav class="flex items-center gap-1 border-b border-[#27272a] font-mono text-xs overflow-x-auto" role="tablist" aria-label="Dashboard sections">
+      <button type="button" id="tab-jobs" role="tab" aria-controls="panel-jobs" aria-selected="true" data-tab="jobs" onclick="setTab('jobs')"
+        class="tab-btn px-3 py-2 -mb-px border-b-2 border-emerald-500 text-white transition shrink-0">Jobs</button>
+      <button type="button" id="tab-matches" role="tab" aria-controls="panel-matches" aria-selected="false" tabindex="-1" data-tab="matches" onclick="setTab('matches')"
+        class="tab-btn px-3 py-2 -mb-px border-b-2 border-transparent text-[#a1a1aa] hover:text-white transition shrink-0">Matches</button>
+      <button type="button" id="tab-tracker" role="tab" aria-controls="panel-tracker" aria-selected="false" tabindex="-1" data-tab="tracker" onclick="setTab('tracker')"
+        class="tab-btn px-3 py-2 -mb-px border-b-2 border-transparent text-[#a1a1aa] hover:text-white transition shrink-0">Tracker</button>
+      <button type="button" id="tab-settings" role="tab" aria-controls="panel-settings" aria-selected="false" tabindex="-1" data-tab="settings" onclick="setTab('settings')"
         class="tab-btn px-3 py-2 -mb-px border-b-2 border-transparent text-[#a1a1aa] hover:text-white transition">
         Settings <span id="settings-gap-badge" class="text-amber-400 hidden">!</span>
       </button>
-      <div class="ml-auto pr-1">
+      <div class="ml-auto pr-1 shrink-0">
         <button onclick="signOut()" class="px-2 py-1 text-[#71717a] hover:text-white transition">sign out</button>
       </div>
     </nav>
 
-    <div id="panel-jobs" class="tab-panel space-y-4">
+    <div id="panel-jobs" role="tabpanel" aria-labelledby="tab-jobs" class="tab-panel space-y-4">
 
     <!-- FAST STAGING COMMAND BAR -->
     <section>
@@ -186,7 +188,21 @@
     </section>
     </div><!-- /panel-jobs -->
 
-    <div id="panel-tracker" class="tab-panel hidden space-y-3">
+    <div id="panel-matches" role="tabpanel" aria-labelledby="tab-matches" class="tab-panel hidden space-y-3">
+      <section class="flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2 bg-[#121215] border border-[#27272a] rounded text-xs font-mono">
+        <span class="text-[#71717a]">Matched <span class="text-white font-semibold" id="matches-count">—</span></span>
+        <span class="text-[#71717a]">Applied externally <span class="text-emerald-400 font-semibold" id="matches-confirmed-count">—</span></span>
+        <span class="text-[#71717a]">Possible <span class="text-amber-400 font-semibold" id="matches-possible-count">—</span></span>
+        <button type="button" onclick="loadMatches()" class="ml-auto px-2.5 py-1 rounded border border-[#27272a] hover:border-zinc-600 bg-[#09090b] text-[#a1a1aa] hover:text-white transition">refresh</button>
+      </section>
+      <section class="space-y-2" id="matches-container" aria-live="polite" aria-busy="true">
+        <div class="p-12 text-center text-[#71717a] space-y-2 bg-[#121215] border border-[#27272a] rounded">
+          <p class="text-xs font-mono text-[#a1a1aa]">Checking discovered jobs against your application history...</p>
+        </div>
+      </section>
+    </div><!-- /panel-matches -->
+
+    <div id="panel-tracker" role="tabpanel" aria-labelledby="tab-tracker" class="tab-panel hidden space-y-3">
       <section class="flex flex-wrap items-center gap-2 p-2 bg-[#121215] border border-[#27272a] rounded font-mono text-xs">
         <span class="text-[#71717a]">stages:</span>
         <span id="tracker-stages" class="text-[#a1a1aa]">—</span>
@@ -213,7 +229,7 @@
       </div>
     </div><!-- /panel-tracker -->
 
-    <div id="panel-settings" class="tab-panel hidden space-y-4">
+    <div id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" class="tab-panel hidden space-y-4">
       <section class="bg-[#121215] border border-[#27272a] rounded p-4 space-y-3">
         <div class="border-b border-[#27272a] pb-2">
           <h2 class="text-sm font-bold text-white font-mono">Education</h2>
@@ -361,6 +377,19 @@
         e.preventDefault();
         document.getElementById('search-input').focus();
       }
+    });
+
+    document.querySelector('[role="tablist"]').addEventListener('keydown', (e) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+      const tabs = Array.from(document.querySelectorAll('.tab-btn'));
+      const current = tabs.indexOf(document.activeElement);
+      if (current < 0) return;
+      e.preventDefault();
+      const next = e.key === 'Home' ? 0
+        : e.key === 'End' ? tabs.length - 1
+        : (current + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      setTab(tabs[next].dataset.tab);
+      tabs[next].focus();
     });
 
     function toggleConsoleDrawer() {
@@ -775,6 +804,7 @@
           report('RECONCILE', `Matched ${data.matched_count} of ${data.sheet_count} sheet rows; ${data.applied_total} marked applied.`);
           fetchStats();
           fetchJobs();
+          loadMatches();
         } else {
           report('ERROR', `Reconcile failed: ${data.detail || 'could not reach Google Sheets'}`);
         }
@@ -1034,7 +1064,7 @@
       bindAuthEnter();
       const signedIn = await refreshAuth();
       const wanted = (location.hash || '#jobs').slice(1);
-      setTab(['jobs', 'tracker', 'settings'].includes(wanted) ? wanted : 'jobs');
+      setTab(['jobs', 'matches', 'tracker', 'settings'].includes(wanted) ? wanted : 'jobs');
       fetchStats();
       fetchJobs();
       await fetchResumesConfig();
@@ -1067,6 +1097,7 @@
     // ---- Tabs --------------------------------------------------------------
     let activeTab = 'jobs';
     const TAB_LOADERS = {
+      matches: () => loadMatches(),
       tracker: () => loadTracker(),
       settings: () => { loadPrefs(); loadEducation(); },
     };
@@ -1083,6 +1114,7 @@
         btn.classList.toggle('border-transparent', !on);
         btn.classList.toggle('text-[#a1a1aa]', !on);
         btn.setAttribute('aria-selected', on ? 'true' : 'false');
+        btn.setAttribute('tabindex', on ? '0' : '-1');
       }
       history.replaceState(null, '', `#${name}`);
       TAB_LOADERS[name]?.();
@@ -1091,6 +1123,93 @@
     async function signOut() {
       await fetch('/api/auth/logout', { method: 'POST' });
       location.reload();
+    }
+
+    // ---- Matches -----------------------------------------------------------
+    async function loadMatches() {
+      const container = document.getElementById('matches-container');
+      document.getElementById('matches-count').textContent = '—';
+      document.getElementById('matches-confirmed-count').textContent = '—';
+      document.getElementById('matches-possible-count').textContent = '—';
+      container.setAttribute('aria-busy', 'true');
+      container.innerHTML = `
+        <div class="p-12 text-center text-[#71717a] space-y-2 bg-[#121215] border border-[#27272a] rounded">
+          <p class="text-xs font-mono text-[#a1a1aa]">Checking discovered jobs against your application history...</p>
+        </div>`;
+
+      try {
+        const res = await fetch('/api/matches');
+        if (!res.ok) {
+          const message = res.status === 401
+            ? 'Sign in to view matches from your application history.'
+            : 'Could not load matches. Try refreshing this tab.';
+          container.innerHTML = `<div role="alert" class="p-8 text-center text-[#71717a] text-xs font-mono bg-[#121215] border border-[#27272a] rounded">${message}</div>`;
+          return;
+        }
+
+        const data = await res.json();
+        document.getElementById('matches-count').textContent = Number(data.count || 0).toLocaleString();
+        document.getElementById('matches-confirmed-count').textContent = Number(data.confirmed_count || 0).toLocaleString();
+        document.getElementById('matches-possible-count').textContent = Number(data.possible_count || 0).toLocaleString();
+        renderMatches(data.matches || []);
+      } catch (err) {
+        container.innerHTML = '<div role="alert" class="p-8 text-center text-[#71717a] text-xs font-mono bg-[#121215] border border-[#27272a] rounded">Could not load matches. Try refreshing this tab.</div>';
+      } finally {
+        container.setAttribute('aria-busy', 'false');
+      }
+    }
+
+    function renderMatches(matches) {
+      const container = document.getElementById('matches-container');
+      if (!matches.length) {
+        container.innerHTML = `
+          <div class="p-12 text-center text-[#71717a] text-xs font-mono bg-[#121215] border border-[#27272a] rounded space-y-1">
+            <p class="text-white font-medium">No prior applications match the current job list.</p>
+            <p>When JobStager finds one, it will appear here instead of disappearing silently.</p>
+          </div>`;
+        return;
+      }
+
+      container.innerHTML = matches.map((match) => {
+        const possible = match.match_status === 'possible';
+        const statusTag = possible
+          ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border border-amber-500/40 bg-amber-500/10 text-amber-400">POSSIBLE PRIOR APPLICATION</span>'
+          : '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border border-emerald-500/40 bg-emerald-500/10 text-emerald-400">APPLIED EXTERNALLY</span>';
+        const application = [match.external_role, match.stage, match.date_applied]
+          .filter(Boolean).map(esc).join(' · ');
+        const source = [
+          match.source ? `Source: ${String(match.source).replaceAll('_', ' ')}` : '',
+          match.matched_by ? `Match: ${String(match.matched_by).replaceAll('_', ' ')}` : '',
+        ].filter(Boolean).map(esc).join(' · ');
+        const initial = String(match.company || 'C').charAt(0).toUpperCase();
+
+        return `
+          <article class="bg-[#121215] border ${possible ? 'border-amber-500/30' : 'border-[#27272a]'} p-3 rounded flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div class="flex items-start space-x-3 flex-1 min-w-0">
+              <div class="w-8 h-8 rounded bg-[#1c1c20] border border-[#27272a] flex items-center justify-center text-xs font-bold text-white shrink-0 font-mono" aria-hidden="true">
+                ${esc(initial)}
+              </div>
+              <div class="space-y-1.5 flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-bold text-white text-xs font-mono">${esc(match.company || '')}</span>
+                  ${match.provider ? getAtsBadge(esc(match.provider)) : ''}
+                  ${statusTag}
+                </div>
+                <div class="flex flex-col sm:flex-row sm:items-center sm:gap-3 text-xs">
+                  <h3 class="font-medium text-[#f4f4f5] break-words">${esc(match.title || '')}</h3>
+                  <span class="text-[11px] text-[#71717a] font-mono">${esc(match.location || '')}</span>
+                </div>
+                ${application ? `<p class="text-[11px] text-[#a1a1aa] font-mono">Tracker: ${application}</p>` : ''}
+                ${source ? `<p class="text-[10px] text-[#71717a] font-mono">${source}</p>` : ''}
+                ${possible ? '<p class="text-[11px] text-amber-300/80 font-mono">This listing remains in Jobs until the match is certain.</p>' : ''}
+              </div>
+            </div>
+            ${match.url ? `
+              <div class="flex items-center shrink-0 self-end md:self-center pt-2 md:pt-0 border-t md:border-t-0 border-[#1c1c20] w-full md:w-auto justify-end">
+                <a href="${esc(match.url)}" target="_blank" rel="noopener" class="text-[#a1a1aa] hover:text-white border border-[#27272a] hover:border-zinc-600 bg-[#09090b] px-2.5 py-1 rounded text-xs font-mono font-medium transition" title="Open official ATS posting">View ↗</a>
+              </div>` : ''}
+          </article>`;
+      }).join('');
     }
 
     // ---- Tracker -----------------------------------------------------------

@@ -86,6 +86,33 @@ applications_table = Table(
     UniqueConstraint("user_id", "company", "role", "link", name="uq_application_per_user"),
 )
 
+# A match is private application state layered over the shared jobs registry. The job
+# itself stays in companies.db; only the user's relationship to its public id lives here.
+# `candidate_job_ids` is used for an ambiguous Sheet row. Those ids are suggestions, not
+# matches, so a single application is never recorded as belonging to several jobs.
+job_matches_table = Table(
+    "job_matches", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+           index=True),
+    Column("job_id", String(500), index=True),
+    Column("candidate_job_ids", Text),
+    Column("origin", String(20), nullable=False),
+    Column("status", String(20), nullable=False),
+    Column("matched_by", String(40), nullable=False),
+    Column("source_key", String(100), nullable=False),
+    Column("external_row", Integer),
+    Column("company", String(300), nullable=False),
+    Column("role", String(400), nullable=False),
+    Column("link", Text),
+    Column("stage", String(60)),
+    Column("date_applied", String(40)),
+    Column("notes", Text),
+    Column("created_at", DateTime(timezone=True), server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now()),
+    UniqueConstraint("user_id", "origin", "source_key", name="uq_match_source_per_user"),
+)
+
 # Attempts against a credential endpoint, so a deployment can throttle without pulling in
 # a cache server. Rows are pruned as they are counted.
 login_attempts_table = Table(

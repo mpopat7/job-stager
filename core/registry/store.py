@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 from pathlib import Path
-import re
 import sqlite3
 from typing import List, Optional, Tuple
 
@@ -22,6 +21,7 @@ class CompanyRegistry:
 
     def __init__(self, db_path: Optional[Path | str] = None):
         self.db_path = Path(db_path or DEFAULT_DB_PATH).resolve()
+        self._legacy_matches: dict[str, dict] = {}
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -212,88 +212,44 @@ class CompanyRegistry:
             return cursor.fetchone()[0]
 
     def count_applied_jobs(self) -> int:
-        """Return total number of jobs cross-referenced as applied."""
+        """Compatibility count for callers still using instance-local reconciliation."""
+        return len(self._legacy_matches)
+
+    def job_records(self) -> list[dict]:
+        """Return public job metadata for matching without application state columns."""
         with self._get_connection() as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'applied'")
-            return cursor.fetchone()[0]
+            rows = conn.execute(
+                """
+                SELECT id, company, company_slug, provider, title, location, url,
+                       apply_url, is_internship, updated_at, discovered_at
+                FROM jobs
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def reconcile_with_tracker(self, applications: List[dict]) -> Tuple[int, List[dict]]:
-        """Cross-reference Google Sheet applications with discovered jobs in SQLite.
+        """Compatibility shim that no longer writes private state onto public jobs."""
+        from core.tracker.matches import match_applications
 
-        Marks matching jobs with status='applied', saving their stage and applied date.
-        """
-        def clean_str(s: str) -> str:
-            if not s:
-                return ""
-            s = s.lower()
-            s = re.sub(r"\b(inc|llc|corp|corporation|technologies|tech|co|company|the)\b", "", s)
-            return re.sub(r"[^a-z0-9]", "", s)
-
-        def clean_url(u: str) -> str:
-            if not u:
-                return ""
-            return u.split("?")[0].rstrip("/").lower()
-
-        matched_records = []
-        updated_count = 0
-
-        with self._get_connection() as conn:
-            db_jobs = conn.execute("SELECT id, company, company_slug, provider, title, url FROM jobs").fetchall()
-
-            for app in applications:
-                comp = app.get("Company", "").strip()
-                role = app.get("Role", "").strip()
-                link = app.get("Link", "").strip()
-                stage = app.get("Stage", "Applied").strip()
-                date_applied = app.get("Date Applied", "").strip()
-                notes = app.get("Comp/Notes", "").strip()
-
-                clean_comp = clean_str(comp)
-                clean_link = clean_url(link)
-                role_lower = role.lower()
-
-                for job in db_jobs:
-                    j_id = job["id"]
-                    j_url = clean_url(job["url"])
-                    j_comp = clean_str(job["company"]) or clean_str(job["company_slug"])
-                    j_title = job["title"].lower()
-
-                    is_match = False
-
-                    # Rule 1: Exact or substring URL match
-                    if clean_link and (clean_link in j_url or j_url in clean_link):
-                        is_match = True
-                    # Rule 2: Same company AND role similarity
-                    elif clean_comp and (clean_comp == j_comp or clean_comp in j_comp):
-                        if "intern" in role_lower or "co-op" in role_lower or "fellow" in role_lower:
-                            is_swe = any(k in role_lower for k in ["software", "swe", "developer"]) and any(k in j_title for k in ["software", "swe", "developer"])
-                            is_data = any(k in role_lower for k in ["data", "analytics", "data analyst"]) and any(k in j_title for k in ["data", "analytics", "data analyst"])
-                            is_ml = any(k in role_lower for k in ["machine learning", "ai", "ml"]) and any(k in j_title for k in ["machine learning", "ai", "ml"])
-                            if is_swe or is_data or is_ml:
-                                is_match = True
-
-                    if is_match:
-                        cursor = conn.execute(
-                            """
-                            UPDATE jobs
-                            SET status = 'applied', stage = ?, applied_date = ?, notes = ?
-                            WHERE id = ?
-                            """,
-                            (stage, date_applied, notes, j_id),
-                        )
-                        if cursor.rowcount > 0:
-                            updated_count += 1
-                            matched_records.append({
-                                "job_id": j_id,
-                                "sheet_company": comp,
-                                "sheet_role": role,
-                                "db_title": job["title"],
-                                "stage": stage,
-                                "date_applied": date_applied,
-                            })
-            conn.commit()
-
-        return updated_count, matched_records
+        jobs = {job["id"]: job for job in self.job_records()}
+        matches = [
+            match for match in match_applications(applications, list(jobs.values()))
+            if match["status"] == "confirmed"
+        ]
+        self._legacy_matches = {match["job_id"]: match for match in matches}
+        records = [
+            {
+                "job_id": match["job_id"],
+                "sheet_company": match["company"],
+                "sheet_role": match["role"],
+                "db_title": jobs[match["job_id"]]["title"],
+                "stage": match["stage"],
+                "date_applied": match["date_applied"],
+                "matched_by": match["matched_by"],
+            }
+            for match in matches
+        ]
+        return len(matches), records
 
     def get_jobs(
         self,
@@ -301,13 +257,19 @@ class CompanyRegistry:
         provider: Optional[ATSProvider] = None,
         limit: int = 50,
         hide_applied: bool = False,
+        exclude_ids: Optional[set[str]] = None,
     ) -> List[JobPosting]:
-        """Query discovered jobs with optional keyword, provider, and applied status filtering."""
+        """Query public jobs, optionally excluding caller-owned confirmed matches."""
         query = "SELECT id, company, company_slug, provider, title, location, url, apply_url, is_internship, status, stage, applied_date, notes, updated_at, discovered_at FROM jobs WHERE 1=1"
         params: list = []
 
+        hidden = set(exclude_ids or ())
         if hide_applied:
-            query += " AND (status != 'applied' OR status IS NULL)"
+            hidden.update(self._legacy_matches)
+        if hidden:
+            placeholders = ",".join("?" for _ in hidden)
+            query += f" AND id NOT IN ({placeholders})"
+            params.extend(sorted(hidden))
 
         if provider:
             query += " AND provider = ?"
@@ -328,6 +290,7 @@ class CompanyRegistry:
             cursor = conn.execute(query, params)
             for r in cursor.fetchall():
                 company_name = r["company"] or r["company_slug"].replace("-", " ").replace(".", " ").title()
+                legacy = self._legacy_matches.get(r["id"])
                 jobs.append(
                     JobPosting(
                         id=r["id"],
@@ -339,10 +302,10 @@ class CompanyRegistry:
                         apply_url=r["apply_url"] or r["url"],
                         provider=ATSProvider(r["provider"]),
                         is_internship=bool(r["is_internship"]),
-                        status=r["status"] or "discovered",
-                        stage=r["stage"],
-                        applied_date=r["applied_date"],
-                        notes=r["notes"],
+                        status="applied" if legacy else "discovered",
+                        stage=legacy["stage"] if legacy else None,
+                        applied_date=legacy["date_applied"] if legacy else None,
+                        notes=legacy["notes"] if legacy else None,
                         updated_at=r["updated_at"],
                         discovered_at=str(r["discovered_at"]) if r["discovered_at"] else None,
                     )
