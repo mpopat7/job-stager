@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright
 
 from core.adapters import get_adapter
 from core.config.loader import load_profile
+from core.config.schema import CandidateProfile
 from core.registry.seed import seed_registry
 from core.registry.store import CompanyRegistry
 from core.scrapers.base import ATSProvider, JobPosting
@@ -19,6 +20,7 @@ from core.scrapers.lever import LeverScraper
 from core.scrapers.ashby import AshbyScraper
 from core.scrapers.resolver import resolve_url
 from core.solver.llm import QuestionSolver
+from core.store.users import UserStore
 from core.tracker.sheets import SheetsTracker
 
 
@@ -27,6 +29,8 @@ async def run_stage(
     grad_year: Optional[int] = None,
     headless: bool = False,
     auto_log: bool = False,
+    profile: Optional[CandidateProfile] = None,
+    user_id: Optional[int] = None,
 ) -> int:
     """Stage a job application in the browser, generate AI answers, and prepare for human review."""
     print(f"\n⚡ JobStager: Initializing staging for application...")
@@ -41,9 +45,11 @@ async def run_stage(
 
     print(f"   Detected ATS: {provider.value.upper()} (Slug: {slug or 'N/A'}, Job ID: {job_id or 'N/A'})")
 
-    # 2. Load Profile
+    # 2. Load Profile. A caller that knows who is asking passes it in; only the command
+    # line falls back to the file on this machine.
     try:
-        profile = load_profile()
+        if profile is None:
+            profile = load_profile()
         print(f"   Candidate:  {profile.candidate.full_name} ({profile.education.school})")
     except Exception as e:
         print(f"❌ Failed to load profile: {e}")
@@ -125,6 +131,7 @@ async def run_stage(
     )
 
     tracker = SheetsTracker(
+        user_id if user_id is not None else UserStore().ensure_local_user(),
         spreadsheet_id=profile.tracker.spreadsheet_id,
         key_path=profile.tracker.credentials_path,
         tab_name=profile.tracker.sheet_tab,
@@ -342,6 +349,7 @@ def main():
     elif args.command == "reconcile":
         profile = load_profile()
         tracker = SheetsTracker(
+            UserStore().ensure_local_user(),
             spreadsheet_id=profile.tracker.spreadsheet_id,
             key_path=profile.tracker.credentials_path,
             tab_name=profile.tracker.sheet_tab,

@@ -1,68 +1,61 @@
-"""Local SQLite tracker for logging applications."""
+"""The application tracker, one set of rows per user.
+
+This used to be its own SQLite file with no owner column and a global
+UNIQUE(company, role, link). On a shared deployment that constraint is a collision
+between people, not within one: the second person to apply to a job would have
+overwritten the first person's row. Ownership is part of the key now.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
 import logging
 from pathlib import Path
-import sqlite3
 from typing import List, Optional
 
+from sqlalchemy import delete, func, select
+
 from core.scrapers.base import JobPosting
+from core.store.db import applications_table, get_engine, init_db, upsert
 from core.tracker.base import BaseTracker
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TRACKER_DB = Path(__file__).parent.parent.parent / "applications.db"
-
 
 class LocalTracker(BaseTracker):
-    """Tracks applied and staged applications locally in SQLite."""
+    """Applications one user has staged or sent."""
 
-    def __init__(self, db_path: Optional[Path | str] = None):
-        self.db_path = Path(db_path or DEFAULT_TRACKER_DB).resolve()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
+    def __init__(self, user_id: int, db_path: Optional[Path | str] = None):
+        self.user_id = user_id
+        self.db_path = db_path
+        init_db(db_path)
 
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_db(self) -> None:
-        with self._get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS applications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date_applied TEXT NOT NULL,
-                    company TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    link TEXT NOT NULL,
-                    stage TEXT NOT NULL DEFAULT 'Applied',
-                    grad_year INTEGER NOT NULL,
-                    notes TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(company, role, link)
-                )
-            """)
-            conn.commit()
+    @property
+    def engine(self):
+        return get_engine(self.db_path)
 
     def read_applications(self, limit: int = 500) -> List[dict]:
-        """Every application logged locally, newest first."""
-        with self._get_connection() as conn:
+        """This user's applications, newest first."""
+        with self.engine.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM applications ORDER BY date_applied DESC, id DESC LIMIT ?",
-                (limit,),
+                select(applications_table)
+                .where(applications_table.c.user_id == self.user_id)
+                .order_by(
+                    applications_table.c.date_applied.desc(), applications_table.c.id.desc()
+                )
+                .limit(limit)
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r._mapping) for r in rows]
 
     def stage_counts(self) -> dict:
-        with self._get_connection() as conn:
+        with self.engine.connect() as conn:
             rows = conn.execute(
-                "SELECT stage, COUNT(*) AS n FROM applications GROUP BY stage ORDER BY n DESC"
+                select(applications_table.c.stage, func.count().label("n"))
+                .where(applications_table.c.user_id == self.user_id)
+                .group_by(applications_table.c.stage)
+                .order_by(func.count().desc())
             ).fetchall()
-        return {r["stage"]: r["n"] for r in rows}
+        return {r.stage: r.n for r in rows}
 
     def log_application(
         self,
@@ -71,31 +64,34 @@ class LocalTracker(BaseTracker):
         stage: str = "Applied",
         notes: str = "",
     ) -> bool:
-        today = datetime.now().strftime("%Y-%m-%d")
-        with self._get_connection() as conn:
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO applications (date_applied, company, role, source, link, stage, grad_year, notes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(company, role, link) DO UPDATE SET
-                        stage=excluded.stage,
-                        notes=excluded.notes
-                    """,
-                    (
-                        today,
-                        job.company,
-                        job.title,
-                        job.provider.value.title(),
-                        job.url,
-                        stage,
-                        grad_year,
-                        notes,
-                    ),
-                )
-                conn.commit()
-                logger.info(f"Logged {job.company} - {job.title} to local tracker ({stage})")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to log to local applications db: {e}")
-                return False
+        values = {
+            "user_id": self.user_id,
+            "date_applied": datetime.now().strftime("%Y-%m-%d"),
+            "company": job.company,
+            "role": job.title,
+            "source": job.provider.value.title(),
+            "link": job.url,
+            "stage": stage,
+            "grad_year": grad_year,
+            "notes": notes,
+        }
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(upsert(
+                    self.engine, applications_table, values,
+                    index_elements=["user_id", "company", "role", "link"],
+                    update_cols=["stage", "notes"],
+                ))
+            logger.info(f"Logged {job.company} - {job.title} for user {self.user_id} ({stage})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to log to applications table: {e}")
+            return False
+
+    def forget_user(self) -> int:
+        """Delete every row this user owns, for an account deletion request."""
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                delete(applications_table).where(applications_table.c.user_id == self.user_id)
+            )
+        return int(result.rowcount or 0)

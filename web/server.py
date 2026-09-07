@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
 import re
 from typing import Dict, List, Optional
 from fastapi import (
-    BackgroundTasks, Cookie, Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+    BackgroundTasks, Cookie, Depends, FastAPI, File, Form, HTTPException, Request,
+    Response, UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
@@ -21,8 +23,10 @@ from core.config.schema import CandidateProfile, Preferences
 from core.store.profiles import ProfileStore
 from core.store.users import UserStore
 from web.auth import (
-    clear_session_cookie, current_user, optional_user, profile_for,
-    profiles, set_session_cookie, setup_required, users,
+    LOGIN_LIMIT, LOGIN_WINDOW, REGISTER_LIMIT, REGISTER_WINDOW,
+    check_deployment_config, clear_session_cookie, client_ip, current_user,
+    optional_user, profile_for, profiles, set_session_cookie, setup_required,
+    single_tenant, throttle, users,
 )
 from core.registry.ingest import ingest_simplify_feed
 from core.registry.roles import all_families, classify_role, role_counts
@@ -32,10 +36,22 @@ from core.scrapers.base import ATSProvider
 from core.scrapers.resolver import probe_company, resolve_url
 from core.tracker.sheets import SheetsTracker
 from cli.main import run_stage
+from web import api_v1
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="JobStager API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Refuse to serve a deployment that is missing what protects its users."""
+    check_deployment_config()
+    purged = users.purge_expired_sessions()
+    if purged:
+        logger.info(f"Purged {purged} expired session(s) at startup")
+    yield
+
+
+app = FastAPI(title="JobStager API", version="0.1.0", lifespan=lifespan)
 
 # Credentials may not be shared with arbitrary origins: with a session cookie in play
 # that would let any page a user visits act as them. The dashboard is same-origin, so an
@@ -48,13 +64,24 @@ ALLOWED_ORIGINS = [
     if o.strip()
 ]
 
+# The extension is a separate origin (chrome-extension://<id>) and authenticates with a
+# bearer token rather than the session cookie, so it is listed without credentials: an
+# arbitrary page that guessed the id still has no token to send.
+EXTENSION_ORIGINS = [
+    o.strip()
+    for o in os.getenv("JOBSTAGER_EXTENSION_ORIGINS", "").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=ALLOWED_ORIGINS + EXTENSION_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(api_v1.router)
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -102,21 +129,29 @@ async def auth_status(user_id: Optional[int] = Depends(optional_user)):
 
 
 @app.post("/api/auth/register")
-async def register(body: CredentialsRequest, response: Response):
+async def register(body: CredentialsRequest, request: Request, response: Response):
+    throttle(f"register:{client_ip(request)}", REGISTER_LIMIT, REGISTER_WINDOW)
     try:
         user_id = users.create_user(body.handle, body.password, body.email)
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
 
-    # A new account starts from the example profile, never from another user's data.
-    seed = CandidateProfile.model_validate(load_profile().model_dump(mode="json"))
-    if users.count_users() > 1:
-        seed = CandidateProfile.model_validate(
-            {"candidate": {
-                "first_name": "", "last_name": "", "email": body.email or "",
-                "phone": "", "location": "",
-            }}
-        )
+    # A new account starts blank. The one exception is the very first account on a
+    # personal install, which adopts the operator's own profile.yaml so there is nothing
+    # to retype -- on a shared deployment that same line would hand the first stranger
+    # who signed up the operator's address, GPA and EEO answers.
+    blank = CandidateProfile.model_validate(
+        {"candidate": {
+            "first_name": "", "last_name": "", "email": body.email or "",
+            "phone": "", "location": "",
+        }}
+    )
+    seed = blank
+    if single_tenant() and users.count_users() == 1:
+        try:
+            seed = CandidateProfile.model_validate(load_profile().model_dump(mode="json"))
+        except Exception as err:
+            logger.info(f"No local profile to adopt for the first account: {err}")
     profiles.save(user_id, seed)
 
     set_session_cookie(response, users.start_session(user_id))
@@ -124,10 +159,20 @@ async def register(body: CredentialsRequest, response: Response):
 
 
 @app.post("/api/auth/login")
-async def login(body: CredentialsRequest, response: Response):
+async def login(body: CredentialsRequest, request: Request, response: Response):
+    # Two buckets: one stops a flood from a single address, the other stops a slow
+    # spray across many addresses from grinding away at one account.
+    ip_bucket = f"login-ip:{client_ip(request)}"
+    handle_bucket = f"login-handle:{body.handle.strip().lower()}"
+    throttle(ip_bucket, LOGIN_LIMIT, LOGIN_WINDOW)
+    throttle(handle_bucket, LOGIN_LIMIT, LOGIN_WINDOW)
+
     user_id = users.verify(body.handle, body.password)
     if user_id is None:
         raise HTTPException(status_code=401, detail="Incorrect handle or password")
+
+    users.clear_attempts(ip_bucket)
+    users.clear_attempts(handle_bucket)
     set_session_cookie(response, users.start_session(user_id))
     return {"status": "signed_in", "handle": body.handle}
 
@@ -292,7 +337,7 @@ async def list_jobs(
 @app.get("/api/applications")
 async def list_applications(user_id: int = Depends(current_user), limit: int = 500):
     """The tracker, read locally so the tab renders without a Sheets round trip."""
-    tracker = LocalTracker()
+    tracker = LocalTracker(user_id)
     rows = tracker.read_applications(limit=limit)
     for r in rows:
         r["role_type"] = classify_role(r.get("role"))
@@ -315,6 +360,7 @@ async def reconcile_tracker(user_id: int = Depends(current_user)):
     try:
         profile = profile_for(user_id)
         tracker = SheetsTracker(
+            user_id,
             spreadsheet_id=profile.tracker.spreadsheet_id,
             key_path=profile.tracker.credentials_path,
             tab_name=profile.tracker.sheet_tab,
@@ -339,8 +385,22 @@ async def reconcile_tracker(user_id: int = Depends(current_user)):
 
 
 @app.post("/api/stage")
-async def stage_application(req: StageRequest, background_tasks: BackgroundTasks):
-    """Trigger the Playwright staging agent to pre-fill the application in the user's browser."""
+async def stage_application(
+    req: StageRequest,
+    background_tasks: BackgroundTasks,
+    user_id: int = Depends(current_user),
+):
+    """Trigger the Playwright staging agent to pre-fill the application in the user's browser.
+
+    This opens a window on the machine running the process, which only makes sense when
+    that machine is the user's own. A shared deployment refuses it and the browser
+    extension does the filling instead.
+    """
+    if not single_tenant():
+        raise HTTPException(
+            status_code=501,
+            detail="Staging runs in your browser via the JobStager extension, not on the server.",
+        )
     url = req.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
@@ -357,6 +417,8 @@ async def stage_application(req: StageRequest, background_tasks: BackgroundTasks
                 grad_year=req.grad_year,
                 headless=False,  # Headed so user can see it
                 auto_log=req.auto_log,
+                profile=profile_for(user_id),
+                user_id=user_id,
             )
         except Exception as e:
             logger.error(f"Error in background staging: {e}")
@@ -372,7 +434,7 @@ async def stage_application(req: StageRequest, background_tasks: BackgroundTasks
 
 
 @app.post("/api/sync")
-async def sync_jobs():
+async def sync_jobs(user_id: int = Depends(current_user)):
     """Ingest live tech internships feed from SimplifyJobs."""
     reg = CompanyRegistry()
     companies, jobs = await ingest_simplify_feed(reg, active_only=True)
@@ -385,7 +447,7 @@ async def sync_jobs():
 
 
 @app.post("/api/probe")
-async def probe_endpoint(req: ProbeRequest):
+async def probe_endpoint(req: ProbeRequest, user_id: int = Depends(current_user)):
     """Probe where a company hosts its ATS board."""
     board = await probe_company(req.company)
     if not board:

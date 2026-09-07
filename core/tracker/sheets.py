@@ -43,10 +43,12 @@ class SheetsTracker(BaseTracker):
 
     def __init__(
         self,
+        user_id: int,
         spreadsheet_id: Optional[str] = None,
         key_path: Optional[str] = None,
         tab_name: Optional[str] = None,
     ):
+        self.user_id = user_id
         self.spreadsheet_id = spreadsheet_id or DEFAULT_SPREADSHEET_ID
         if not self.spreadsheet_id:
             raise ValueError(
@@ -55,7 +57,7 @@ class SheetsTracker(BaseTracker):
             )
         self.key_path = os.path.expanduser(key_path or DEFAULT_KEY_PATH)
         self.tab_name = tab_name or DEFAULT_APPLICATIONS_TAB
-        self.local_tracker = LocalTracker()
+        self.local_tracker = LocalTracker(user_id)
 
     def _get_service(self):
         """Build Google Sheets API service using service-account credentials."""
