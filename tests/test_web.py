@@ -11,8 +11,12 @@ async def test_serve_terminal_ui():
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.get("/")
         assert res.status_code == 200
-        assert "milen@jobstager" in res.text
+        assert "job-stager" in res.text
         assert "TERMINAL LOG" in res.text
+        # The header renders whoever is signed in. It used to be the operator's own
+        # handle in the markup, which is wrong once more than one person has an account.
+        assert 'id="candidate-name"' in res.text
+        assert "milen@" not in res.text
 
 
 @pytest.mark.asyncio
