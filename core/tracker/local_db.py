@@ -82,6 +82,12 @@ class LocalTracker(BaseTracker):
                     index_elements=["user_id", "company", "role", "link"],
                     update_cols=["stage", "notes"],
                 ))
+            try:
+                from core.tracker.matches import MatchStore
+
+                MatchStore(self.user_id, self.db_path).mark_jobstager(job)
+            except Exception as err:
+                logger.warning(f"Application saved, but its discovered-job match failed: {err}")
             logger.info(f"Logged {job.company} - {job.title} for user {self.user_id} ({stage})")
             return True
         except Exception as e:

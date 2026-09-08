@@ -23,8 +23,7 @@ _COMPANY_SUFFIXES = {
     "technologies", "technology", "the",
 }
 _TITLE_IGNORED = {
-    "a", "an", "and", "fall", "for", "or", "position", "spring", "summer", "the",
-    "winter",
+    "a", "an", "and", "for", "or", "position", "the",
 }
 _TRACKING_QUERY_KEYS = {"gh_src", "ref", "referrer", "referral", "source"}
 
@@ -57,12 +56,12 @@ def normalize_url(url: str) -> str:
     return urlunsplit(((parsed.scheme or "https").lower(), host, path, urlencode(query), ""))
 
 
-def ats_identity(url: str) -> Optional[tuple[str, str]]:
+def ats_identity(url: str) -> Optional[tuple[str, str, str]]:
     """Return a provider/job-id identity when the repository's resolver can find one."""
-    provider, _slug, job_id = resolve_url(url or "")
+    provider, slug, job_id = resolve_url(url or "")
     if provider == ATSProvider.UNKNOWN or not job_id:
         return None
-    return provider.value, str(job_id).strip().lower()
+    return provider.value, slug.strip().lower(), str(job_id).strip().lower()
 
 
 def normalize_company(company: str) -> str:
@@ -76,8 +75,16 @@ def normalize_title(title: str) -> str:
     text = re.sub(r"\bsoftware engineering\b", "software engineer", text)
     text = re.sub(r"\binternship\b", "intern", text)
     words = re.findall(r"[a-z0-9]+", text)
-    kept = [word for word in words if word not in _TITLE_IGNORED and not re.fullmatch(r"20\d{2}", word)]
+    kept = [word for word in words if word not in _TITLE_IGNORED]
     return " ".join(kept)
+
+
+def _title_overlap(left: str, right: str) -> float:
+    left_words = set(left.split())
+    right_words = set(right.split())
+    if not left_words or not right_words:
+        return 0.0
+    return len(left_words & right_words) / len(left_words | right_words)
 
 
 def _source_key(application: dict, ordinal: int) -> str:
@@ -92,29 +99,37 @@ def _source_key(application: dict, ordinal: int) -> str:
     return f"content:{digest}:{ordinal}"
 
 
-def _job_identity(job: dict) -> Optional[tuple[str, str]]:
+def _job_identity(job: dict) -> Optional[tuple[str, str, str]]:
     resolved = ats_identity(job.get("url", ""))
     if resolved:
         return resolved
     job_id = str(job.get("id", ""))
     parts = job_id.split(":", 2)
     if len(parts) == 3 and parts[0] in {provider.value for provider in ATSProvider}:
-        return parts[0], parts[2].lower()
+        return parts[0], parts[1].lower(), parts[2].lower()
     return None
 
 
 def match_applications(applications: Iterable[dict], jobs: list[dict]) -> list[dict]:
     """Match each application to at most one job, with exact identities taking priority."""
     by_url: dict[str, list[dict]] = {}
-    by_identity: dict[tuple[str, str], list[dict]] = {}
+    by_identity: dict[tuple[str, str, str], list[dict]] = {}
     by_company_title: dict[tuple[str, str], list[dict]] = {}
     for job in jobs:
-        canonical = normalize_url(job.get("url", ""))
-        if canonical:
-            by_url.setdefault(canonical, []).append(job)
+        for raw_url in {job.get("url", ""), job.get("apply_url", "")}:
+            canonical = normalize_url(raw_url)
+            if canonical:
+                bucket = by_url.setdefault(canonical, [])
+                if not any(existing["id"] == job["id"] for existing in bucket):
+                    bucket.append(job)
+            identity = ats_identity(raw_url)
+            if identity:
+                bucket = by_identity.setdefault(identity, [])
+                if not any(existing["id"] == job["id"] for existing in bucket):
+                    bucket.append(job)
         identity = _job_identity(job)
-        if identity:
-            by_identity.setdefault(identity, []).append(job)
+        if identity and identity not in by_identity:
+            by_identity[identity] = [job]
         company_title = (
             normalize_company(job.get("company") or job.get("company_slug", "")),
             normalize_title(job.get("title", "")),
@@ -152,10 +167,9 @@ def match_applications(applications: Iterable[dict], jobs: list[dict]) -> list[d
             pending.append((ordinal, application))
 
     for ordinal, application in pending:
-        key = (
-            normalize_company(str(application.get("Company", ""))),
-            normalize_title(str(application.get("Role", ""))),
-        )
+        company = normalize_company(str(application.get("Company", "")))
+        title = normalize_title(str(application.get("Role", "")))
+        key = (company, title)
         if not all(key):
             continue
         candidates = available(by_company_title.get(key, []))
@@ -165,10 +179,24 @@ def match_applications(applications: Iterable[dict], jobs: list[dict]) -> list[d
             results.append(_match_record(
                 application, ordinal, job_id, "confirmed", "company_title"
             ))
+            continue
         elif len(candidates) > 1:
             results.append(_match_record(
                 application, ordinal, None, "possible", "company_title",
                 [job["id"] for job in candidates],
+            ))
+            continue
+
+        related = [
+            job for job in available(job for job in jobs if (
+                normalize_company(job.get("company") or job.get("company_slug", "")) == company
+            ))
+            if _title_overlap(title, normalize_title(job.get("title", ""))) >= 0.5
+        ]
+        if related:
+            results.append(_match_record(
+                application, ordinal, None, "possible", "company_title_tokens",
+                [job["id"] for job in related],
             ))
     return results
 
@@ -209,6 +237,53 @@ class MatchStore:
     def engine(self):
         return get_engine(self.db_path)
 
+    def reconcile_jobstager(
+        self,
+        registry: CompanyRegistry,
+        applications: Iterable[dict],
+    ) -> dict:
+        """Rematch locally recorded applications after the discovery feed changes."""
+        rows = list(applications)
+        candidates = [
+            {
+                "Company": row.get("company", ""),
+                "Role": row.get("role", ""),
+                "Link": row.get("link", ""),
+                "Stage": row.get("stage", "Applied"),
+                "Date Applied": row.get("date_applied", ""),
+                "Comp/Notes": row.get("notes", ""),
+                "row": row.get("id"),
+            }
+            for row in rows
+        ]
+        matches = [
+            match for match in match_applications(candidates, registry.job_records())
+            if match["status"] == "confirmed"
+        ]
+
+        now = datetime.now(timezone.utc)
+        with self.engine.begin() as conn:
+            conn.execute(delete(job_matches_table).where(
+                job_matches_table.c.user_id == self.user_id,
+                job_matches_table.c.origin == "jobstager",
+            ))
+            for match in matches:
+                values = dict(match)
+                values["candidate_job_ids"] = json.dumps(values["candidate_job_ids"])
+                values["external_row"] = None
+                conn.execute(insert(job_matches_table).values(
+                    user_id=self.user_id,
+                    origin="jobstager",
+                    created_at=now,
+                    updated_at=now,
+                    **values,
+                ))
+
+        return {
+            "application_count": len(rows),
+            "matched_count": len(matches),
+        }
+
     def reconcile_sheet(self, registry: CompanyRegistry, applications: Iterable[dict]) -> dict:
         rows = list(applications)
         matches = match_applications(rows, registry.job_records())
@@ -236,13 +311,14 @@ class MatchStore:
                 job_matches_table.c.origin == "sheet",
             ))
             for match in filtered:
+                values = dict(match)
+                values["candidate_job_ids"] = json.dumps(values["candidate_job_ids"])
                 conn.execute(insert(job_matches_table).values(
                     user_id=self.user_id,
                     origin="sheet",
-                    candidate_job_ids=json.dumps(match.pop("candidate_job_ids")),
                     created_at=now,
                     updated_at=now,
-                    **match,
+                    **values,
                 ))
 
         confirmed = sum(match["status"] == "confirmed" for match in filtered)
@@ -272,11 +348,11 @@ class MatchStore:
         if not matches or matches[0]["status"] != "confirmed":
             return None
         match = matches[0]
+        match["source_key"] = f"job:{match['job_id']}"
         now = datetime.now(timezone.utc)
         values = {
             "user_id": self.user_id,
             "origin": "jobstager",
-            "candidate_job_ids": "[]",
             "created_at": now,
             "updated_at": now,
             **match,

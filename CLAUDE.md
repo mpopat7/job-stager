@@ -6,7 +6,7 @@ JobStager is a local automation agent that pre-fills ATS application forms (Gree
 ## Environment & Commands
 - **Python**: `python3` via `uv` (never bare `python`).
 - **Run Web Server**: `uv run python3 -m web.server` (running on `127.0.0.1:8000`).
-- **Run Tests**: `uv run pytest -q` (93 tests, ~47s).
+- **Run Tests**: `uv run pytest -q`.
 - **Run Scanner**: `python3 ~/dev/skills/all/unslop-ui/scripts/devibe_scan.py web/static/index.html` (currently 0 tells).
 - **Git Policy**: Do not commit, push, or modify remote git state unless explicitly requested.
 
@@ -27,6 +27,11 @@ JobStager is a local automation agent that pre-fills ATS application forms (Gree
   local SQLite file; a deployment points it at Postgres and nothing else changes.
 - `core/store/crypto.py`: Encrypts EEO self-identification at rest (`JOBSTAGER_SECRET_KEY`).
 - `core/registry/`: SQLite company registry (`companies.db`) and job listings store.
+- `core/tracker/local_db.py`: the primary, per-user in-app application tracker.
+- `core/tracker/matches.py`: private matches between discovered jobs and application history.
+  Confirmed Sheet matches are hidden from Jobs; possible matches remain visible with a warning.
+- `core/tracker/sheets.py`: optional Google Sheets master-list integration. Sheet-only rows never
+  enter the in-app Tracker tab; JobStager applications are mirrored when sync is enabled.
 - `web/static/index.html`: De-vibed minimalist dashboard with live terminal log drawer.
 
 ## Working on the fill layer

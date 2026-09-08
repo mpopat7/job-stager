@@ -156,6 +156,40 @@ def test_unique_company_and_normalized_title_is_confirmed(tracker_state):
     assert match["matched_by"] == "company_title"
 
 
+def test_unique_company_title_emits_only_one_match(tracker_state):
+    app_db, registry, _, user_id, _ = tracker_state
+    registry.upsert_jobs([
+        _job("exact", "Software Engineering Intern", company="Acme, Inc."),
+        _job("related", "Software Engineer Intern - Fall 2027", company="Acme, Inc."),
+    ])
+
+    result = MatchStore(user_id, app_db).reconcile_sheet(registry, [
+        _sheet_row("Acme", "Software Engineering Internship")
+    ])
+
+    matches = MatchStore(user_id, app_db).list_matches(origin="sheet")
+    assert result["matched_count"] == 1
+    assert len(matches) == 1
+    assert matches[0]["status"] == "confirmed"
+    assert matches[0]["job_id"].endswith(":exact")
+
+
+def test_a_new_cohort_is_not_confirmed_as_an_old_application(tracker_state):
+    app_db, registry, _, user_id, _ = tracker_state
+    registry.upsert_jobs([_job(
+        "summer-2027",
+        "Software Engineer Intern, Summer 2027",
+    )])
+
+    MatchStore(user_id, app_db).reconcile_sheet(registry, [
+        _sheet_row("Acme", "Software Engineer Intern, Summer 2026")
+    ])
+
+    match = MatchStore(user_id, app_db).list_matches(origin="sheet")[0]
+    assert match["status"] == "possible"
+    assert MatchStore(user_id, app_db).confirmed_job_ids() == set()
+
+
 def test_possible_match_stays_in_jobs_without_approval(tracker_state):
     app_db, registry, users, user_id, _ = tracker_state
     registry.upsert_jobs([_job("backend", "Software Developer Intern")])
@@ -178,6 +212,25 @@ def test_possible_match_stays_in_jobs_without_approval(tracker_state):
         jobs = client.get("/api/jobs", headers=headers).json()["jobs"]
 
     assert {job["id"] for job in jobs} == {stored_job.id}
+
+
+def test_feed_reconciliation_matches_jobstager_application_added_before_job(
+    tracker_state,
+):
+    app_db, registry, _, user_id, _ = tracker_state
+    job = _job("late-arrival", "Software Engineer Intern")
+    LocalTracker(user_id, app_db).log_application(job, grad_year=2028)
+    assert MatchStore(user_id, app_db).confirmed_job_ids() == set()
+
+    registry.upsert_jobs([job])
+    result = MatchStore(user_id, app_db).reconcile_jobstager(
+        registry, LocalTracker(user_id, app_db).read_applications()
+    )
+
+    assert result == {"application_count": 1, "matched_count": 1}
+    assert MatchStore(user_id, app_db).confirmed_job_ids() == {
+        registry.get_jobs()[0].id
+    }
 
 
 def test_confirmed_match_is_hidden_only_for_its_owner(tracker_state):

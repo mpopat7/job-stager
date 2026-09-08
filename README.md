@@ -2,7 +2,7 @@
 
 > **Stop filling out repetitive forms. Stop letting blind bots hallucinate on your behalf.**
 > 
-> An intelligent job application staging agent that parses applicant tracking systems (Greenhouse, Lever, Ashby, Workday), pre-fills every field, generates truthful AI responses to custom screening questions, pops open the completed form for a 5-second human review, and automatically syncs to your application tracker.
+> An intelligent job application staging agent that parses applicant tracking systems (Greenhouse, Lever, Ashby, Workday), pre-fills every field, generates truthful AI responses to custom screening questions, pops open the completed form for a 5-second human review, and records applications in its built-in tracker. Google Sheets sync is optional.
 
 ---
 
@@ -52,7 +52,7 @@ Jobbie and other auto-appliers maintain closed proprietary databases of jobs. Jo
 ┌────────────────────────────────────────────────────────┐
 │            3. Local Matched Jobs DB (SQLite)           │
 │   • Ranked opportunities ready for 1-click staging     │
-│   • Deduplicated against your Google Sheet tracker     │
+│   • Deduplicated against your application history     │
 │   • Self-expanding: auto-registers any URL you paste   │
 └────────────────────────────────────────────────────────┘
 ```
@@ -79,7 +79,7 @@ Jobbie and other auto-appliers maintain closed proprietary databases of jobs. Jo
 1. **Deterministic Macro Discovery**: Ingests fresh postings directly from employer ATS APIs (Greenhouse, Lever, Ashby, Workday CXS) across ~15,000 companies without fragile browser scraping or datacenter proxy costs.
 2. **Zero Bot Detection**: Submissions happen from your real machine, local residential IP, and genuine browser session.
 3. **100% Trust**: You see the exact answers on the employer's official page before they enter the ATS.
-4. **Automatic Tracking**: The moment it is staged or submitted, it registers directly into your application tracking sheet without manual logging.
+4. **Automatic Tracking**: The moment it is staged or submitted, it registers in JobStager's private in-app tracker. A connected Google Sheet can receive the same row and act as a master list alongside applications entered manually.
 5. **10x Time Savings**: Reduces an 8-minute repetitive form to a 5-second glance and click.
 
 ---
@@ -182,8 +182,9 @@ job-stager/
 │   │   └── prompts.py       # Grounded, anti-fluff Q&A prompts
 │   └── tracker/             # Sync connectors
 │       ├── base.py
-│       ├── sheets.py        # Google Sheets connector (internship-watcher)
-│       └── local_db.py      # SQLite / JSON fallbacks
+│       ├── local_db.py      # Primary per-user application tracker
+│       ├── matches.py       # Per-user confirmed/possible prior-application matches
+│       └── sheets.py        # Optional Google Sheets master-list connector
 ├── cli/
 │   ├── main.py              # CLI staging runner: `job-stager stage https://...`
 │   ├── scan.py              # CLI board scanner: `job-stager scan [--company <name> | --all]`
@@ -251,7 +252,7 @@ experience_highlights:
   - Implement company resolver / probe (`probe.py`): company name -> ATS provider + slug.
   - Implement `GreenhouseAdapter` and `LeverAdapter` via Playwright for local browser staging.
   - Implement LLM screening question solver with anti-fluff prompts.
-  - Hook submission/staging event to Google Sheets tracker (`internship-watcher`).
+  - Record submissions in the in-app tracker and optionally mirror them to Google Sheets.
 - [ ] **Phase 2: Complex ATS Support & Tier-2 Scrapers**
   - Implement `WorkdayAdapter` (Playwright multi-step logged-in staging).
   - Implement `AshbyAdapter` for 1-click staging.

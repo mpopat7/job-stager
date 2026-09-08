@@ -3,7 +3,7 @@
 Project guide and instructions for AI agents working on **JobStager**.
 
 ## Project Summary
-JobStager is an intelligent job application staging agent that automates the tedious parts of applying to jobs across Applicant Tracking Systems (Greenhouse, Lever, Ashby, Workday, etc.). Instead of a blind cloud auto-applier (like Jobbie.bot), JobStager pre-fills the form with AI-tailored answers, pops open the completed page for a 5-second human review before submission, and automatically logs the application to the configured Google Sheets tracker.
+JobStager is an intelligent job application staging agent that automates the tedious parts of applying to jobs across Applicant Tracking Systems (Greenhouse, Lever, Ashby, Workday, etc.). Instead of a blind cloud auto-applier (like Jobbie.bot), JobStager pre-fills the form with AI-tailored answers, pops open the completed page for a 5-second human review before submission, and logs the application to its private in-app tracker. Google Sheets is an optional master-list integration.
 
 ## Key Boundaries & Rules
 - This repository is located in `~/dev/projects/personal/job-stager/` (public portfolio code).
@@ -13,7 +13,7 @@ JobStager is an intelligent job application staging agent that automates the ted
 - Do not commit or push to remote unless explicitly asked by Milen.
 
 ## Integrations
-- **Tracker**: the Google Sheets tracker id and credentials path come from `tracker:` in `profile.yaml` (or `JOBSTAGER_SPREADSHEET_ID`). Never hardcode either.
+- **Tracker**: the per-user local tracker is always available. An optional Google Sheets tracker id and credentials path come from `tracker:` in `profile.yaml` (or `JOBSTAGER_SPREADSHEET_ID`). Never hardcode either.
 - **Resumes**: `resumes:` in `profile.yaml` may hold one PDF per graduation-year variant; the adapter picks by the posting's detected cohort.
 - **Skills**: Integrates with `/log-app`, `/rtail`, and `/cover-letter`.
 
@@ -31,7 +31,7 @@ JobStager is an intelligent job application staging agent that automates the ted
      - `resolver.py`: Slug & provider auto-detection (`probe.py`).
    - `adapters/`: ATS DOM parsers and Playwright injectors for browser staging.
    - `solver/`: LLM prompt engine generating concise, grounded, truthful answers.
-   - `tracker/`: Connector to Google Sheets (`internship-watcher`) and local database.
+   - `tracker/`: Primary per-user application storage, prior-application matching, and optional Google Sheets sync.
 2. `cli/`:
    - `main.py`: `job-stager stage <url>` (browser staging & review).
    - `scan.py`: `job-stager scan [--company <name> | --all]` (async board crawler).

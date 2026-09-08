@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime
+import logging
 import sys
 from typing import Optional
 from playwright.async_api import async_playwright
@@ -21,7 +21,9 @@ from core.scrapers.ashby import AshbyScraper
 from core.scrapers.resolver import resolve_url
 from core.solver.llm import QuestionSolver
 from core.store.users import UserStore
-from core.tracker.sheets import SheetsTracker
+from core.tracker import LocalTracker, MatchStore, SheetsTracker, tracker_for
+
+logger = logging.getLogger(__name__)
 
 
 async def run_stage(
@@ -130,12 +132,8 @@ async def run_stage(
         provider=provider,
     )
 
-    tracker = SheetsTracker(
-        user_id if user_id is not None else UserStore().ensure_local_user(),
-        spreadsheet_id=profile.tracker.spreadsheet_id,
-        key_path=profile.tracker.credentials_path,
-        tab_name=profile.tracker.sheet_tab,
-    )
+    owner_id = user_id if user_id is not None else UserStore().ensure_local_user()
+    tracker = tracker_for(owner_id, profile)
 
     logged = False
 
@@ -174,18 +172,15 @@ async def run_stage(
                     pass
 
             try:
-                tracker.log_application(job=job, grad_year=chosen_grad_year, stage="Applied")
-                today_str = datetime.now().strftime("%-d %b %Y")
-                with registry._get_connection() as conn:
-                    conn.execute(
-                        "UPDATE jobs SET status = 'applied', stage = 'Applied', applied_date = ? WHERE url = ? OR id = ?",
-                        (today_str, url, job.id),
-                    )
-                    conn.commit()
+                if not tracker.log_application(
+                    job=job, grad_year=chosen_grad_year, stage="Applied"
+                ):
+                    raise RuntimeError("The application could not be saved to every configured tracker")
                 logged = True
-                print(f"\n📝 Application logged to your Google Sheets tracker:")
-                print(f"   Spreadsheet ID: {profile.tracker.spreadsheet_id}")
-                print(f"   Tab:            {profile.tracker.sheet_tab}")
+                destination = "JobStager and Google Sheets" if (
+                    profile.tracker.spreadsheet_id and profile.tracker.auto_sync_sheets
+                ) else "JobStager"
+                print(f"\n📝 Application logged to {destination}:")
                 print(f"   Row added:      {job.company} | {job.title} | {chosen_grad_year} grad | Applied")
                 return {"success": True, "company": job.company, "title": job.title, "grad_year": chosen_grad_year}
             except Exception as err:
@@ -228,7 +223,7 @@ async def run_stage(
             print("\n👀 Application staged in browser window.")
             print("   • JobStager toolbar is live at the top of the page.")
             print("   • Review and submit directly on the site.")
-            print("   • Click [✓ Mark as Applied] on the banner to record to your Sheets tracker.")
+            print("   • Click [✓ Mark as Applied] on the banner to record it in JobStager.")
             print("   • Close window when done (no terminal input needed).\n")
             try:
                 await page.wait_for_event("close", timeout=0)
@@ -314,13 +309,30 @@ def main():
         print(f"\n✅ Ingestion complete!")
         print(f"   Registered companies: {reg.count_companies()} total")
         print(f"   Discovered jobs:      {reg.count_jobs()} total")
+        profile = load_profile()
+        owner_id = UserStore().ensure_local_user()
+        match_store = MatchStore(owner_id)
+        match_store.reconcile_jobstager(reg, LocalTracker(owner_id).read_applications())
+        if profile.tracker.spreadsheet_id and profile.tracker.auto_sync_sheets:
+            try:
+                tracker = tracker_for(owner_id, profile)
+                matches = match_store.reconcile_sheet(reg, tracker.read_applications())
+                print(f"   Sheet matches:        {matches['matched_count']}")
+            except Exception as err:
+                logger.warning(f"Jobs synced, but Sheet reconciliation failed: {err}")
+                print("   Sheet matches:        unavailable (job sync still completed)")
         print("   Run `job-stager jobs` to view and stage opportunities.")
         sys.exit(0)
 
     elif args.command == "jobs":
         reg = CompanyRegistry()
+        owner_id = UserStore().ensure_local_user()
+        match_store = MatchStore(owner_id)
+        states = match_store.job_states()
+        current_ids = {job["id"] for job in reg.job_records()}
+        confirmed = match_store.confirmed_job_ids() & current_ids
         total_jobs = reg.count_jobs()
-        total_applied = reg.count_applied_jobs()
+        total_applied = len(confirmed)
         if total_jobs == 0:
             print("⚡ No jobs in local database yet. Run `job-stager sync` to ingest thousands of active postings.")
             sys.exit(0)
@@ -330,14 +342,19 @@ def main():
             keywords=args.keywords,
             provider=ats_enum,
             limit=args.limit,
-            hide_applied=not args.show_applied,
+            hide_applied=False,
+            exclude_ids=confirmed if not args.show_applied else None,
         )
         status_filter_text = "All roles" if args.show_applied else f"Unapplied roles only (hiding {total_applied} applied)"
         print(f"\n🎯 Found {len(matching)} opportunities ({total_jobs} total in DB, {status_filter_text}):")
         print(f"   Filters: {', '.join(args.keywords)}\n")
 
         for i, j in enumerate(matching, 1):
-            status_tag = f" \033[93m[APPLIED: {j.stage or 'Applied'}]\033[0m" if j.status == "applied" else ""
+            state = states.get(j.id)
+            status_tag = (
+                f" \033[93m[APPLIED: {state.get('stage') or 'Applied'}]\033[0m"
+                if state and state["status"] == "confirmed" else ""
+            )
             print(f" {i:2d}. {j.company:<20} | {j.title}{status_tag}")
             print(f"     Location: {j.location}")
             print(f"     ATS:      {j.provider.value.upper()}")
@@ -348,8 +365,12 @@ def main():
 
     elif args.command == "reconcile":
         profile = load_profile()
+        if not profile.tracker.spreadsheet_id:
+            print("No Google Sheet is connected. The in-app tracker is ready to use.")
+            sys.exit(0)
+        owner_id = UserStore().ensure_local_user()
         tracker = SheetsTracker(
-            UserStore().ensure_local_user(),
+            owner_id,
             spreadsheet_id=profile.tracker.spreadsheet_id,
             key_path=profile.tracker.credentials_path,
             tab_name=profile.tracker.sheet_tab,
@@ -359,24 +380,24 @@ def main():
         print(f"   Fetched {len(apps)} rows from sheet tab '{profile.tracker.sheet_tab}'.")
 
         reg = CompanyRegistry()
-        updated_count, matched = reg.reconcile_with_tracker(apps)
-        total_applied = reg.count_applied_jobs()
+        match_store = MatchStore(owner_id)
+        result = match_store.reconcile_sheet(reg, apps)
+        total_applied = len(match_store.confirmed_job_ids())
         total_jobs = reg.count_jobs()
         unapplied = total_jobs - total_applied
 
         print(f"\n✅ Tracker Reconciliation Complete:")
         print(f"   Sheet applications:   {len(apps)}")
-        print(f"   Matched DB postings:  {updated_count}")
+        print(f"   Matched DB postings:  {result['matched_count']}")
         print(f"   Total marked applied: {total_applied}")
         print(f"   Fresh / unapplied:    {unapplied} (out of {total_jobs} total in DB)")
 
-        # Stage breakdown
-        with reg._get_connection() as conn:
-            breakdown = conn.execute(
-                "SELECT COALESCE(stage, 'Applied'), count(*) FROM jobs WHERE status = 'applied' GROUP BY stage ORDER BY count(*) DESC"
-            ).fetchall()
+        breakdown = {}
+        for match in match_store.list_matches(origin=None, status="confirmed", limit=None):
+            stage = match["stage"] or "Applied"
+            breakdown[stage] = breakdown.get(stage, 0) + 1
         print("\n📊 Applied Breakdown by Stage:")
-        for stage_name, cnt in breakdown:
+        for stage_name, cnt in sorted(breakdown.items(), key=lambda item: item[1], reverse=True):
             print(f"   • {stage_name:<16} : {cnt} listings")
 
         print("\n💡 Run `job-stager jobs` to view only fresh unapplied roles, or `job-stager jobs --show-applied` to include all.")

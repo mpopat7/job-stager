@@ -32,6 +32,7 @@ from core.registry.ingest import ingest_simplify_feed
 from core.registry.roles import all_families, classify_role, role_counts
 from core.registry.store import CompanyRegistry
 from core.tracker.local_db import LocalTracker
+from core.tracker.matches import MatchStore
 from core.scrapers.base import ATSProvider
 from core.scrapers.resolver import probe_company, resolve_url
 from core.tracker.sheets import SheetsTracker
@@ -242,7 +243,10 @@ async def get_stats(user_id: Optional[int] = Depends(optional_user)):
     reg = CompanyRegistry()
     profile = profile_for(user_id)
     total_jobs = reg.count_jobs()
-    applied_jobs = reg.count_applied_jobs()
+    current_job_ids = {job["id"] for job in reg.job_records()}
+    applied_jobs = (
+        len(MatchStore(user_id).confirmed_job_ids() & current_job_ids) if user_id else 0
+    )
 
     return {
         "total_jobs": total_jobs,
@@ -263,7 +267,7 @@ async def get_stats(user_id: Optional[int] = Depends(optional_user)):
         "tracker": {
             "spreadsheet_id": profile.tracker.spreadsheet_id,
             "tab": profile.tracker.sheet_tab,
-            "connected": True,
+            "connected": bool(profile.tracker.spreadsheet_id),
         },
     }
 
@@ -276,9 +280,14 @@ async def list_jobs(
     sort: str = "recent",
     hide_applied: bool = True,
     limit: int = 50,
+    user_id: Optional[int] = Depends(optional_user),
 ):
-    """List matching jobs from SQLite registry with applied status filter."""
+    """List public jobs with the caller's private application state layered on top."""
     reg = CompanyRegistry()
+    states = MatchStore(user_id).job_states() if user_id else {}
+    confirmed = {
+        job_id for job_id, state in states.items() if state["status"] == "confirmed"
+    }
     ats_enum = None
     if provider and provider.lower() != "all":
         try:
@@ -291,7 +300,8 @@ async def list_jobs(
         keywords=keywords,
         provider=ats_enum,
         limit=limit,
-        hide_applied=hide_applied,
+        hide_applied=False,
+        exclude_ids=confirmed if hide_applied else None,
     )
 
     # Classify before filtering so the counts describe the whole result set, not the
@@ -321,16 +331,58 @@ async def list_jobs(
                 "provider": j.provider.value,
                 "role_type": classify_role(j.title),
                 "is_internship": j.is_internship,
-                "status": j.status,
-                "stage": j.stage,
-                "applied_date": j.applied_date,
-                "notes": j.notes,
+                "status": (
+                    "applied" if states.get(j.id, {}).get("status") == "confirmed"
+                    else "discovered"
+                ),
+                "match_status": states.get(j.id, {}).get("status"),
+                "match_source": states.get(j.id, {}).get("origin"),
+                "matched_by": states.get(j.id, {}).get("matched_by"),
+                "stage": states.get(j.id, {}).get("stage"),
+                "applied_date": states.get(j.id, {}).get("date_applied"),
+                "notes": states.get(j.id, {}).get("notes"),
                 "updated_at": j.updated_at,
                 "discovered_at": j.discovered_at,
                 "posted_date": j.post_date_display,
             }
             for j in jobs
         ],
+    }
+
+
+@app.get("/api/matches")
+async def list_matches(user_id: int = Depends(current_user), limit: int = 500):
+    """Sheet-origin matches, kept separate from JobStager's own application tracker."""
+    store = MatchStore(user_id)
+    matches = store.list_matches(origin="sheet", limit=limit)
+    jobs = {job["id"]: job for job in CompanyRegistry().job_records()}
+    output = []
+    for match in matches:
+        job_ids = [match["job_id"]] if match["job_id"] else match["candidate_job_ids"]
+        for job_id in job_ids:
+            job = jobs.get(job_id)
+            if not job:
+                continue
+            output.append({
+                "job_id": job_id,
+                "title": job["title"],
+                "company": job.get("company") or match["company"],
+                "location": job.get("location"),
+                "url": job["url"],
+                "provider": job["provider"],
+                "match_status": match["status"],
+                "matched_by": match["matched_by"],
+                "source": "google_sheet",
+                "date_applied": match["date_applied"],
+                "stage": match["stage"],
+                "external_role": match["role"],
+            })
+    counts = store.counts(origin="sheet")
+    return {
+        "count": counts["confirmed"] + counts["possible"],
+        "confirmed_count": counts["confirmed"],
+        "possible_count": counts["possible"],
+        "matches": output,
     }
 
 
@@ -359,6 +411,15 @@ async def reconcile_tracker(user_id: int = Depends(current_user)):
     """Reconcile SQLite discovered jobs with Google Sheets tracker rows."""
     try:
         profile = profile_for(user_id)
+        if not profile.tracker.spreadsheet_id:
+            return {
+                "status": "not_connected",
+                "sheet_count": 0,
+                "matched_count": 0,
+                "confirmed_count": 0,
+                "possible_count": 0,
+                "applied_total": len(MatchStore(user_id).confirmed_job_ids()),
+            }
         tracker = SheetsTracker(
             user_id,
             spreadsheet_id=profile.tracker.spreadsheet_id,
@@ -367,14 +428,17 @@ async def reconcile_tracker(user_id: int = Depends(current_user)):
         )
         applications = tracker.read_applications()
         reg = CompanyRegistry()
-        updated_count, matched_records = reg.reconcile_with_tracker(applications)
+        match_store = MatchStore(user_id)
+        match_store.reconcile_jobstager(reg, LocalTracker(user_id).read_applications())
+        result = match_store.reconcile_sheet(reg, applications)
         total_jobs = reg.count_jobs()
-        applied_jobs = reg.count_applied_jobs()
+        applied_jobs = len(
+            match_store.confirmed_job_ids() & {job["id"] for job in reg.job_records()}
+        )
 
         return {
             "status": "reconciled",
-            "sheet_count": len(applications),
-            "matched_count": updated_count,
+            **result,
             "applied_total": applied_jobs,
             "unapplied_total": total_jobs - applied_jobs,
             "total_jobs": total_jobs,
@@ -438,12 +502,30 @@ async def sync_jobs(user_id: int = Depends(current_user)):
     """Ingest live tech internships feed from SimplifyJobs."""
     reg = CompanyRegistry()
     companies, jobs = await ingest_simplify_feed(reg, active_only=True)
-    return {
+    result = {
         "status": "synced",
         "companies_registered": companies,
         "jobs_added": jobs,
         "total_jobs": reg.count_jobs(),
     }
+    match_store = MatchStore(user_id)
+    result["jobstager_tracker"] = match_store.reconcile_jobstager(
+        reg, LocalTracker(user_id).read_applications()
+    )
+    profile = profile_for(user_id)
+    if profile.tracker.spreadsheet_id and profile.tracker.auto_sync_sheets:
+        try:
+            tracker = SheetsTracker(
+                user_id,
+                spreadsheet_id=profile.tracker.spreadsheet_id,
+                key_path=profile.tracker.credentials_path,
+                tab_name=profile.tracker.sheet_tab,
+            )
+            result["tracker"] = match_store.reconcile_sheet(reg, tracker.read_applications())
+        except Exception as err:
+            logger.warning(f"Jobs synced, but tracker reconciliation failed: {err}")
+            result["tracker_error"] = str(err)
+    return result
 
 
 @app.post("/api/probe")

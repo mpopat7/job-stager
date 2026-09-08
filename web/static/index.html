@@ -654,11 +654,14 @@
 
       container.innerHTML = jobs.map((j) => {
         const isApplied = j.status === 'applied';
+        const isPossible = j.match_status === 'possible';
         const initial = (j.company || 'C').charAt(0).toUpperCase();
 
         const statusTag = isApplied
           ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border border-amber-500/40 bg-amber-500/10 text-amber-400">APPLIED: ${j.stage || 'Applied'}${j.applied_date ? ' (' + j.applied_date + ')' : ''}</span>`
-          : `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border border-emerald-500/40 bg-emerald-500/10 text-emerald-400">NEW</span>`;
+          : isPossible
+            ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border border-amber-500/40 bg-amber-500/10 text-amber-400">POSSIBLE PRIOR APPLICATION</span>`
+            : `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border border-emerald-500/40 bg-emerald-500/10 text-emerald-400">NEW</span>`;
 
         const stageActionBtn = isApplied
           ? `<button onclick="stageJob('${encodeURIComponent(j.url)}', this)" class="text-amber-400 hover:text-white bg-[#18181b] hover:bg-zinc-800 border border-amber-500/30 px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer">
@@ -670,7 +673,7 @@
             </button>`;
 
         return `
-          <div class="bg-[#121215] hover:bg-[#18181b] border ${isApplied ? 'border-amber-500/30' : 'border-[#27272a]'} hover:border-zinc-600 p-3 rounded transition flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div class="bg-[#121215] hover:bg-[#18181b] border ${isApplied || isPossible ? 'border-amber-500/30' : 'border-[#27272a]'} hover:border-zinc-600 p-3 rounded transition flex flex-col md:flex-row md:items-center justify-between gap-3">
             
             <!-- Left Info Block -->
             <div class="flex items-start space-x-3 flex-1 min-w-0">
@@ -801,7 +804,11 @@
         const res = await fetch('/api/reconcile', { method: 'POST' });
         const data = await res.json();
         if (res.ok) {
-          report('RECONCILE', `Matched ${data.matched_count} of ${data.sheet_count} sheet rows; ${data.applied_total} marked applied.`);
+          if (data.status === 'not_connected') {
+            report('SHEETS', 'No Google Sheet is connected. Your in-app tracker still works normally.');
+          } else {
+            report('RECONCILE', `Matched ${data.matched_count} of ${data.sheet_count} sheet rows; ${data.applied_total} marked applied.`);
+          }
           fetchStats();
           fetchJobs();
           loadMatches();
@@ -830,6 +837,7 @@
         report('SYNC', `Feed synced. ${data.total_jobs} active postings.`);
         fetchStats();
         fetchJobs();
+        loadMatches();
       } catch (err) {
         report('ERROR', `Feed sync failed: ${err.message}`);
       } finally {
