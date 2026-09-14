@@ -232,6 +232,20 @@
     <div id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" class="tab-panel hidden space-y-4">
       <section class="bg-[#121215] border border-[#27272a] rounded p-4 space-y-3">
         <div class="border-b border-[#27272a] pb-2">
+          <h2 class="text-sm font-bold text-white font-mono">Application Links</h2>
+          <p class="text-[11px] text-[#a1a1aa] font-mono">Named fields use their matching link. For a general Website field, JobStager tries these from top to bottom. Only checked graduation years receive each link.</p>
+        </div>
+        <div id="links-rows" class="space-y-2" aria-live="polite"></div>
+        <button type="button" onclick="addOtherLink()" class="text-xs font-mono text-emerald-400 hover:text-white cursor-pointer">+ Add other link</button>
+        <div class="pt-3 border-t border-[#27272a] flex items-center justify-between gap-3">
+          <span class="text-[11px] text-[#a1a1aa] font-mono" id="links-status" role="status">Unchecked for every year means the link stays off applications.</span>
+          <button type="button" onclick="saveLinks()" id="save-links-btn"
+            class="px-4 py-1.5 rounded text-xs font-medium text-black bg-emerald-500 hover:bg-emerald-400 cursor-pointer transition font-mono shrink-0">Save Links</button>
+        </div>
+      </section>
+
+      <section class="bg-[#121215] border border-[#27272a] rounded p-4 space-y-3">
+        <div class="border-b border-[#27272a] pb-2">
           <h2 class="text-sm font-bold text-white font-mono">Education</h2>
           <p class="text-[11px] text-[#71717a] font-mono">School, degree and GPA, as an application should read them back.</p>
         </div>
@@ -532,6 +546,7 @@
         if (res.ok) {
           localStorage.setItem('larp_grad_dates_prompted', 'true');
           report('CONFIG', `Active cohorts: ${data.active_cohorts.join(', ')}.`);
+          loadLinks();
         } else {
           report('ERROR', data.detail || 'Failed to save cohort preferences.');
         }
@@ -856,6 +871,158 @@
       }, 3500);
     }
   
+    // ---- Application links ------------------------------------------------
+    let linksCandidateCache = null;
+    let linkYears = [];
+    const linkNames = { portfolio: 'Portfolio', github: 'GitHub', linkedin: 'LinkedIn' };
+
+    function linkRow(key, url, allowed) {
+      const other = key.startsWith('other:');
+      const name = other ? key.slice(6) : linkNames[key];
+      const yearChoices = linkYears.map(year => `
+        <label class="inline-flex items-center gap-1.5 text-[11px] font-mono text-[#d4d4d8] cursor-pointer">
+          <input type="checkbox" class="link-year accent-[#22c55e] w-4 h-4" value="${year}"
+            ${allowed === null || allowed.includes(year) ? 'checked' : ''} />${year}
+        </label>`).join('');
+      return `
+        <div class="link-row bg-[#09090b] border border-[#27272a] rounded p-3 space-y-2" data-link-key="${esc(key)}">
+          <div class="flex items-end gap-2">
+            <div class="flex-1 min-w-0 grid grid-cols-1 ${other ? 'sm:grid-cols-[minmax(7rem,1fr)_minmax(12rem,2fr)]' : ''} gap-2">
+              ${other ? `<label class="space-y-1 block"><span class="text-[#a1a1aa] font-mono text-[11px]">Link name</span>
+                <input type="text" class="link-name w-full bg-[#121215] border border-[#3f3f46] rounded px-2 py-1.5 text-white font-mono text-xs" value="${esc(name)}" placeholder="Kaggle" /></label>` : ''}
+              <label class="space-y-1 block"><span class="text-[#a1a1aa] font-mono text-[11px]">${other ? 'URL' : esc(name)}</span>
+                <input type="url" class="link-url w-full bg-[#121215] border border-[#3f3f46] rounded px-2 py-1.5 text-white font-mono text-xs" value="${esc(url)}" placeholder="https://" inputmode="url" /></label>
+            </div>
+            <div class="flex gap-1 pb-0.5">
+              <button type="button" onclick="moveLink(this, -1)" aria-label="Move ${esc(name || 'other link')} earlier" title="Higher priority"
+                class="border border-[#3f3f46] rounded px-2 py-1 text-[#d4d4d8] hover:text-white hover:border-[#a1a1aa] font-mono text-xs">↑</button>
+              <button type="button" onclick="moveLink(this, 1)" aria-label="Move ${esc(name || 'other link')} later" title="Lower priority"
+                class="border border-[#3f3f46] rounded px-2 py-1 text-[#d4d4d8] hover:text-white hover:border-[#a1a1aa] font-mono text-xs">↓</button>
+              ${other ? `<button type="button" onclick="removeOtherLink(this)" aria-label="Remove ${esc(name || 'other link')}" title="Remove link"
+                class="border border-[#3f3f46] rounded px-2 py-1 text-[#a1a1aa] hover:text-white hover:border-[#a1a1aa] font-mono text-xs">×</button>` : ''}
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span class="text-[11px] font-mono text-[#a1a1aa]">Use for</span>${yearChoices}
+          </div>
+        </div>`;
+    }
+
+    async function loadLinks() {
+      const status = document.getElementById('links-status');
+      try {
+        const [profileRes, cohortsRes] = await Promise.all([
+          fetch('/api/profile'), fetch('/api/resumes')
+        ]);
+        if (profileRes.status === 401) { status.textContent = 'Sign in to edit links.'; return; }
+        if (!profileRes.ok || !cohortsRes.ok) throw new Error('Could not load links.');
+        const profile = (await profileRes.json()).profile;
+        const cohorts = await cohortsRes.json();
+        linksCandidateCache = profile.candidate;
+        linkYears = (cohorts.active_cohorts?.length
+          ? cohorts.active_cohorts : [cohorts.default_cohort]).map(Number).sort((a, b) => a - b);
+
+        const links = linksCandidateCache.links || {};
+        const keys = ['portfolio', 'github', 'linkedin',
+          ...Object.keys(links.other || {}).map(name => `other:${name}`)];
+        const ordered = [...new Set([...(links.priority || []), ...keys])]
+          .filter(key => keys.includes(key));
+        document.getElementById('links-rows').innerHTML = ordered.map(key =>
+          linkRow(key, key.startsWith('other:') ? links.other[key.slice(6)] : links[key] || '',
+            links.allowed_cohorts?.[key] ?? null)
+        ).join('');
+        status.textContent = 'Top row is the first choice for a general Website field.';
+      } catch (err) {
+        status.textContent = 'Could not load links.';
+      }
+    }
+
+    function addOtherLink() {
+      document.getElementById('links-rows').insertAdjacentHTML('beforeend', linkRow('other:', '', null));
+      document.querySelector('#links-rows .link-row:last-child .link-name').focus();
+    }
+
+    function removeOtherLink(button) {
+      button.closest('.link-row').remove();
+      document.getElementById('links-status').textContent = 'Save Links to keep this change.';
+    }
+
+    function moveLink(button, direction) {
+      const row = button.closest('.link-row');
+      const sibling = direction < 0 ? row.previousElementSibling : row.nextElementSibling;
+      if (!sibling) return;
+      if (direction < 0) sibling.before(row);
+      else sibling.after(row);
+      document.getElementById('links-status').textContent = 'Save Links to keep this order.';
+    }
+
+    async function saveLinks() {
+      const status = document.getElementById('links-status');
+      if (!linksCandidateCache) { status.textContent = 'Links are still loading.'; return; }
+      const previous = linksCandidateCache.links || {};
+      const links = {
+        ...previous, other: {},
+        allowed_cohorts: Object.fromEntries(Object.entries(previous.allowed_cohorts || {})
+          .filter(([key]) => !['portfolio', 'github', 'linkedin'].includes(key) && !key.startsWith('other:'))),
+        priority: [],
+        portfolio: null, github: null, linkedin: null,
+      };
+      const seen = new Set();
+      for (const row of document.querySelectorAll('#links-rows .link-row')) {
+        const input = row.querySelector('.link-url');
+        const url = input.value.trim();
+        const other = row.dataset.linkKey.startsWith('other:');
+        const name = other ? row.querySelector('.link-name').value.trim() : '';
+        if (other && !url && !name) continue;
+        if (other && (!name || /^(linkedin|github|portfolio|website|url|link|other|resume)$/i.test(name))) {
+          status.textContent = 'Give each other link a distinct name, such as Kaggle.';
+          row.querySelector('.link-name').focus();
+          return;
+        }
+        if (url) {
+          try {
+            const parsed = new URL(url);
+            if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) throw new Error();
+          } catch (err) {
+            status.textContent = 'Enter a full http:// or https:// URL.';
+            input.focus();
+            return;
+          }
+        }
+        const key = other ? `other:${name}` : row.dataset.linkKey;
+        if (seen.has(key.toLowerCase())) {
+          status.textContent = 'Each other link needs a different name.';
+          row.querySelector('.link-name')?.focus();
+          return;
+        }
+        seen.add(key.toLowerCase());
+        if (other) links.other[name] = url;
+        else links[key] = url || null;
+        const selected = [...row.querySelectorAll('.link-year:checked')].map(box => Number(box.value));
+        links.allowed_cohorts[key] = selected.length === linkYears.length ? null : selected;
+        links.priority.push(key);
+      }
+      links.priority.push(...(previous.priority || []).filter(key =>
+        !['portfolio', 'github', 'linkedin'].includes(key) && !key.startsWith('other:')));
+      status.textContent = 'Saving...';
+      const button = document.getElementById('save-links-btn');
+      button.disabled = true;
+      try {
+        const res = await fetch('/api/profile', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ candidate: { ...linksCandidateCache, links } }),
+        });
+        const data = await res.json();
+        if (!res.ok) { status.textContent = data.detail || 'Save failed.'; return; }
+        linksCandidateCache = { ...linksCandidateCache, links };
+        status.textContent = 'Saved. New applications use these link rules.';
+      } catch (err) {
+        status.textContent = 'Save failed.';
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     // ---- Preferences -------------------------------------------------------
     let prefsCache = null;
 
@@ -1107,7 +1274,7 @@
     const TAB_LOADERS = {
       matches: () => loadMatches(),
       tracker: () => loadTracker(),
-      settings: () => { loadPrefs(); loadEducation(); },
+      settings: () => { loadLinks(); loadPrefs(); loadEducation(); },
     };
 
     function setTab(name) {

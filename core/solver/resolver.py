@@ -123,6 +123,7 @@ class AnswerResolver:
         self.grad_year = grad_year or profile.education.graduation_year
         # Answers the solver produced for this posting, keyed by question fragment.
         self.answers = answers or {}
+        self._website_fields: Dict[str, str] = {}
 
     # -- entry point ------------------------------------------------------
 
@@ -131,6 +132,7 @@ class AnswerResolver:
         question: str,
         kind: Kind,
         offered: Optional[Sequence[str]] = None,
+        field_ref: Optional[str] = None,
     ) -> Answer:
         """Answer `question` as asked by a control of type `kind`.
 
@@ -144,8 +146,12 @@ class AnswerResolver:
         "No" or "I do not require sponsorship".
         """
         key = classify(question, kind)
+        if kind is Kind.TEXT and key in {None, QKey.WEBSITE}:
+            named = self._named_other_link(question)
+            if named is not None:
+                return named
         if key is not None:
-            ans = self._answer_for(key, kind)
+            ans = self._answer_for(key, kind, question, field_ref)
             if not ans:
                 # A key with nothing behind it still names the field, which is what
                 # makes an empty address box a flag rather than a skipped control.
@@ -165,6 +171,36 @@ class AnswerResolver:
                 return screen
 
         return Answer(key=key) if key is not None else NO_ANSWER
+
+    def _named_other_link(self, question: str) -> Optional[Answer]:
+        for name in self.profile.candidate.links.other:
+            label = name.strip()
+            mentions_link = re.search(r"\b(url|website|profile|link|site)\b", question, re.IGNORECASE)
+            if (len(label) >= 3 and
+                re.search(rf"(?<!\w){re.escape(label)}(?!\w)", question, re.IGNORECASE) and
+                (mentions_link or question.strip().lower() == label.lower())):
+                return Answer(
+                    key=QKey.WEBSITE,
+                    value=self.profile.candidate.links.url_for(f"other:{name}", self.grad_year),
+                    source="profile",
+                )
+        return None
+
+    def _website_answer(self, question: str, field_ref: Optional[str]) -> Answer:
+        links = self.profile.candidate.links
+        eligible = links.eligible_urls(self.grad_year)
+        if re.search(r"\b(other|additional|extra)\b", question, re.IGNORECASE):
+            eligible.sort(key=lambda pair: not pair[0].startswith("other:"))
+        if field_ref and field_ref in self._website_fields:
+            url = self._website_fields[field_ref]
+        else:
+            assigned = set(self._website_fields.values())
+            url = next((value for _, value in eligible if value not in assigned), None)
+            if url is None and eligible:
+                url = eligible[0][1]
+            if field_ref and url:
+                self._website_fields[field_ref] = url
+        return Answer(key=QKey.WEBSITE, value=url, source="profile")
 
     # -- generic fallbacks ------------------------------------------------
 
@@ -228,7 +264,9 @@ class AnswerResolver:
 
     # -- the answer table -------------------------------------------------
 
-    def _answer_for(self, key: QKey, kind: Kind) -> Answer:
+    def _answer_for(
+        self, key: QKey, kind: Kind, question: str = "", field_ref: Optional[str] = None
+    ) -> Answer:
         p = self.profile
         c = p.candidate
         d = p.disclosures
@@ -353,11 +391,13 @@ class AnswerResolver:
 
         # -- links
         if key is QKey.LINKEDIN:
-            return A(c.links.linkedin, "profile")
+            return A(c.links.url_for("linkedin", self.grad_year), "profile")
         if key is QKey.GITHUB:
-            return A(c.links.github, "profile")
+            return A(c.links.url_for("github", self.grad_year), "profile")
+        if key is QKey.PORTFOLIO:
+            return A(c.links.url_for("portfolio", self.grad_year), "profile")
         if key is QKey.WEBSITE:
-            return A(c.links.portfolio or c.links.github, "profile")
+            return self._website_answer(question, field_ref)
 
         # -- logistics
         if key is QKey.START_DATE:

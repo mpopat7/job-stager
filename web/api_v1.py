@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from core.config.grad_detector import detect_grad_year
-from core.solver.questions import Kind
+from core.solver.questions import Kind, QKey
 from core.solver.resolver import AnswerResolver, pick_option
 from web.auth import current_user, profile_for
 
@@ -107,7 +107,7 @@ async def resolve_fields(
 
 def _answer_field(resolver: AnswerResolver, f: FieldDescriptor) -> ResolvedAnswer:
     offered = [o for o in f.offered if o and o.strip()]
-    ans = resolver.resolve(f.question, f.kind, offered=offered or None)
+    ans = resolver.resolve(f.question, f.kind, offered=offered or None, field_ref=f.ref)
 
     out = ResolvedAnswer(
         ref=f.ref,
@@ -119,7 +119,9 @@ def _answer_field(resolver: AnswerResolver, f: FieldDescriptor) -> ResolvedAnswe
 
     if f.kind is Kind.TEXT:
         out.value = ans.text
-        if out.value is None and _looks_open_ended(f):
+        if out.value is None and ans.key not in {
+            QKey.LINKEDIN, QKey.GITHUB, QKey.PORTFOLIO, QKey.WEBSITE
+        } and _looks_open_ended(f):
             open_ans = resolver.open_response(f.question)
             out.value = open_ans.text
             if out.value is not None:

@@ -199,6 +199,7 @@ job-stager/
 
 ### Profile & Knowledge Base (`profile.yaml`)
 Stores the ground truth to prevent hallucinations:
+The dashboard's **Settings → Application Links** section lets each account edit these URLs, order the choices for a general Website field, and select the graduation years on which each link may appear. A named LinkedIn, GitHub, portfolio, or custom-link field uses its matching URL only when that year is enabled. Settings are stored with the account; the standalone CLI still reads `profile.yaml`.
 ```yaml
 candidate:
   first_name: "Jordan"
@@ -210,6 +211,11 @@ candidate:
     linkedin: "https://linkedin.com/in/example"
     github: "https://github.com/example"
     portfolio: "https://example.com"
+    other:
+      Kaggle: "https://kaggle.com/example"
+    allowed_cohorts:
+      portfolio: [2029] # omit a link to allow every cohort; [] disables it
+    priority: [portfolio, github, linkedin, "other:Kaggle"]
 
 disclosures:
   work_authorization: "US Citizen"

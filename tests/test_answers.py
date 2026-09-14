@@ -143,6 +143,46 @@ def test_grad_year_honours_the_targeted_cohort(profile):
     ).text == "2029"
 
 
+def test_links_follow_cohort_rules_and_generic_priority(profile):
+    links = profile.candidate.links
+    links.allowed_cohorts = {"portfolio": [2029], "github": [2028, 2029]}
+    links.other = {"Kaggle": "https://kaggle.com/example"}
+    links.priority = ["portfolio", "other:Kaggle", "github", "linkedin"]
+
+    for year in (2028, 2029):
+        resolver = AnswerResolver(profile, grad_year=year)
+        assert resolver.resolve("LinkedIn Profile", Kind.TEXT).text == links.linkedin
+        assert resolver.resolve("GitHub URL", Kind.TEXT).text == links.github
+        assert resolver.resolve("Kaggle profile", Kind.TEXT).text == links.other["Kaggle"]
+        assert resolver.resolve("Portfolio URL", Kind.TEXT).text == (
+            links.portfolio if year == 2029 else None
+        )
+        assert resolver.resolve("Website", Kind.TEXT, field_ref="first").text == (
+            links.portfolio if year == 2029 else links.other["Kaggle"]
+        )
+        assert resolver.resolve("Website", Kind.TEXT, field_ref="second").text != (
+            resolver.resolve("Website", Kind.TEXT, field_ref="first").text
+        )
+
+
+@pytest.mark.parametrize("question", [
+    "Link to the job posting where you found this role",
+    "Posting URL",
+    "Link to an article you wrote",
+    "Demo video link",
+])
+def test_a_link_to_something_else_is_not_a_profile_website(question):
+    assert classify(question, Kind.TEXT) is None
+
+
+def test_an_opted_out_link_is_never_replaced_by_a_custom_answer(profile):
+    profile.candidate.links.allowed_cohorts["portfolio"] = [2029]
+    profile.custom_answers["portfolio"] = "https://wrong.example.com"
+    answer = AnswerResolver(profile, grad_year=2028).resolve("Portfolio URL", Kind.TEXT)
+    assert answer.key is QKey.PORTFOLIO
+    assert answer.text is None
+
+
 # -- kind changes the shape of the answer, not its meaning ---------------
 
 def test_a_text_box_gets_one_city_and_a_picker_gets_a_fallback_chain(resolver):

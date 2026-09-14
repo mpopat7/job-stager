@@ -153,6 +153,35 @@ async def test_smart_fill_form_comprehensive():
 
 
 @pytest.mark.asyncio
+async def test_staged_links_respect_the_postings_grad_year():
+    profile = load_test_profile()
+    profile.candidate.links.allowed_cohorts = {"portfolio": [2029]}
+    form = """<form>
+      <label for="portfolio">Portfolio URL</label><input type="url" id="portfolio" />
+      <label for="website">Website</label><input type="url" id="website" />
+      <label for="github">GitHub</label><input type="url" id="github" />
+    </form>"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        for year in (2028, 2029):
+            page = await browser.new_page()
+            await page.set_content(form)
+            await GreenhouseAdapter().smart_fill_form(
+                page, page.main_frame, profile, grad_year=year
+            )
+            assert await page.input_value("#portfolio") == (
+                profile.candidate.links.portfolio if year == 2029 else ""
+            )
+            assert await page.input_value("#website") == (
+                profile.candidate.links.portfolio if year == 2029
+                else profile.candidate.links.github
+            )
+            assert await page.input_value("#github") == profile.candidate.links.github
+            await page.close()
+        await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_inject_review_banner_and_rpc():
     adapter = GreenhouseAdapter()
     rpc_called = False

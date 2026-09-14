@@ -19,6 +19,26 @@ class CandidateLinks(BaseModel):
     portfolio: Optional[str] = None
     twitter: Optional[str] = None
     other: Dict[str, str] = Field(default_factory=dict)
+    # Missing/null means every cohort; an empty list means never use the link.
+    allowed_cohorts: Dict[str, Optional[List[int]]] = Field(default_factory=dict)
+    priority: List[str] = Field(default_factory=lambda: ["portfolio", "github", "linkedin"])
+
+    def url_for(self, key: str, grad_year: int) -> Optional[str]:
+        years = self.allowed_cohorts.get(key)
+        if years is not None and grad_year not in years:
+            return None
+        if key.startswith("other:"):
+            return self.other.get(key[6:]) or None
+        if key in {"portfolio", "github", "linkedin", "twitter"}:
+            return getattr(self, key) or None
+        return None
+
+    def eligible_urls(self, grad_year: int) -> List[tuple[str, str]]:
+        keys = list(dict.fromkeys([
+            *self.priority, "portfolio", "github", "linkedin",
+            *(f"other:{name}" for name in self.other),
+        ]))
+        return [(key, url) for key in keys if (url := self.url_for(key, grad_year))]
 
 
 class CandidateInfo(BaseModel):

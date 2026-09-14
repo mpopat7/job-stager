@@ -869,8 +869,14 @@ class BaseStagingAdapter(ABC):
                         # 6. Text inputs, email, tel, url, number, textareas
                         # Input type is stronger evidence than any label: a type=email
                         # box is an email box whatever its id says.
-                        typed = {'email': 'email address', 'tel': 'phone number'}.get(t, '')
-                        ans = resolver.resolve(f"{typed} {desc}".strip(), Kind.TEXT)
+                        if info['value'].strip():
+                            continue
+                        typed = {
+                            'email': 'email address', 'tel': 'phone number', 'url': 'website'
+                        }.get(t, '')
+                        ans = resolver.resolve(
+                            f"{typed} {desc}".strip(), Kind.TEXT, field_ref=el_key
+                        )
                         val = ans.text
 
                         if not val and (

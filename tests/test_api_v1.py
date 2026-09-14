@@ -196,6 +196,40 @@ async def test_the_cohort_is_detected_from_the_posting(isolated):
 
 
 @pytest.mark.asyncio
+async def test_saved_link_rules_control_extension_answers(isolated):
+    async with _client() as client:
+        await _register(client)
+        await _seed_profile(isolated, client)
+        candidate = (await client.get("/api/profile")).json()["profile"]["candidate"]
+        candidate["links"]["other"] = {"Kaggle": "https://kaggle.com/example"}
+        candidate["links"]["allowed_cohorts"] = {"portfolio": [2029]}
+        candidate["links"]["priority"] = ["portfolio", "github", "other:Kaggle", "linkedin"]
+        assert (await client.put("/api/profile", json={"candidate": candidate})).status_code == 200
+
+        fields = [
+            {"ref": "portfolio", "kind": "text", "question": "Portfolio URL"},
+            {"ref": "website", "kind": "text", "question": "Website"},
+            {"ref": "website2", "kind": "text", "question": "Additional website"},
+            {"ref": "linkedin", "kind": "text", "question": "LinkedIn"},
+            {"ref": "kaggle", "kind": "text", "question": "Kaggle profile"},
+        ]
+        res = await client.post("/v1/resolve", json={"grad_year": 2028, "fields": fields})
+        by_ref = {answer["ref"]: answer["value"] for answer in res.json()["answers"]}
+        assert by_ref == {
+            "portfolio": None,
+            "website": candidate["links"]["github"],
+            "website2": "https://kaggle.com/example",
+            "linkedin": candidate["links"]["linkedin"],
+            "kaggle": "https://kaggle.com/example",
+        }
+
+        res = await client.post("/v1/resolve", json={"grad_year": 2029, "fields": fields})
+        by_ref = {answer["ref"]: answer["value"] for answer in res.json()["answers"]}
+        assert by_ref["portfolio"] == candidate["links"]["portfolio"]
+        assert by_ref["website"] == candidate["links"]["portfolio"]
+
+
+@pytest.mark.asyncio
 async def test_an_explicit_cohort_overrides_detection(isolated):
     async with _client() as client:
         await _register(client)

@@ -15,6 +15,9 @@ candidate:
     linkedin: "https://www.linkedin.com/in/example"
     github: "https://github.com/example"
     portfolio: "https://example.com"
+    # Optional: cohort rules apply to link fields and general Website fields.
+    # allowed_cohorts: {portfolio: [2029]}  # [] means never; omitted means all years
+    # priority: [portfolio, github, linkedin]  # first eligible link fills Website
 
 # Self-identification. Left unset means the form's own "prefer not to say" is
 # used where one exists; fill these in only if you want them answered.

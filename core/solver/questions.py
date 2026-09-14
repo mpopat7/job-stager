@@ -92,6 +92,7 @@ class QKey(str, Enum):
     # Links
     LINKEDIN = "linkedin"
     GITHUB = "github"
+    PORTFOLIO = "portfolio"
     WEBSITE = "website"
 
     # Logistics
@@ -336,10 +337,17 @@ PATTERNS: List[QuestionPattern] = [
     # Links
     QuestionPattern(QKey.LINKEDIN, _p(r"\blinkedin\b"), _TEXT),
     QuestionPattern(QKey.GITHUB, _p(r"\bgithub\b"), _TEXT),
+    QuestionPattern(QKey.PORTFOLIO, _p(r"\bportfolio\b|\bpersonal[\s_-]?(?:web)?site\b"), _TEXT),
     QuestionPattern(
         QKey.WEBSITE,
-        _p(r"\b(website|portfolio|personal[\s_-]?site)\b"),
+        _p(r"\b(website|web[\s_-]?site|url|links?)\b"),
         _TEXT,
+        # A bare "url"/"link" also names links to things that aren't the candidate's:
+        # the posting they found, an article, a demo video.
+        veto=_p(
+            r"\b(resume|cv|cover[\s_-]?letter|transcript|writing[\s_-]?sample|"
+            r"posting|job|role|position|listing|article|publication|paper|video|demo)\b"
+        ),
     ),
 
     # Logistics
