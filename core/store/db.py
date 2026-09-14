@@ -19,8 +19,8 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, MetaData,
-    String, Table, Text, UniqueConstraint, create_engine, func, insert,
+    BigInteger, Boolean, Column, DateTime, ForeignKey, Index, Integer, MetaData,
+    String, Table, Text, UniqueConstraint, create_engine, false, func, insert, inspect, true,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -87,7 +87,7 @@ applications_table = Table(
 )
 
 # A match is private application state layered over the shared jobs registry. The job
-# itself stays in companies.db; only the user's relationship to its public id lives here.
+# itself stays in `jobs`; only the user's relationship to its public id lives here.
 # `candidate_job_ids` is used for an ambiguous Sheet row. Those ids are suggestions, not
 # matches, so a single application is never recorded as belonging to several jobs.
 job_matches_table = Table(
@@ -123,7 +123,50 @@ login_attempts_table = Table(
     Column("attempted_at", DateTime(timezone=True), nullable=False),
 )
 
+# The public registry: boards and the postings scraped from them. It used to be its own
+# companies.db file, which a host with no persistent disk loses on every restart.
+companies_table = Table(
+    "companies", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", String(300), nullable=False),
+    Column("slug", String(200), nullable=False),
+    Column("provider", String(40), nullable=False),
+    Column("board_url", Text, nullable=False),
+    Column("career_url", Text),
+    Column("verified", Boolean, nullable=False, server_default=true()),
+    Column("active", Boolean, nullable=False, server_default=true()),
+    Column("job_count", Integer, nullable=False, server_default="0"),
+    Column("last_scanned", String(40)),
+    Column("created_at", DateTime(timezone=True), server_default=func.now()),
+    UniqueConstraint("provider", "slug", name="uq_company_board"),
+)
+
+jobs_table = Table(
+    "jobs", metadata,
+    Column("id", String(500), primary_key=True),
+    Column("company", String(300)),
+    Column("company_slug", String(200), nullable=False),
+    Column("provider", String(40), nullable=False),
+    Column("title", Text, nullable=False),
+    Column("location", Text),
+    Column("url", Text, nullable=False),
+    Column("apply_url", Text),
+    Column("is_internship", Boolean, nullable=False, server_default=false()),
+    Column("updated_at", String(40)),
+    Column("discovered_at", DateTime(timezone=True), server_default=func.now()),
+    Index("ix_jobs_url", "url"),
+)
+
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+# The revision that matches what `create_all` built before migrations existed.
+BASELINE_REVISION = "0001_baseline"
+_BASELINE_TABLES = (
+    "users", "profiles", "field_provenance", "sessions", "applications", "job_matches",
+    "login_attempts",
+)
+
 _engines: dict[str, Engine] = {}
+_migrated: set[str] = set()
 
 
 def database_url(db_path: Optional[Path | str] = None) -> str:
@@ -135,15 +178,24 @@ def database_url(db_path: Optional[Path | str] = None) -> str:
     if db_path is not None:
         text = str(db_path)
         if "://" in text:
-            return text
+            return _with_driver(text)
         return f"sqlite:///{Path(text).resolve()}"
     configured = os.getenv("DATABASE_URL", "").strip()
     if configured:
-        # Heroku-style URLs name a driver SQLAlchemy 2 no longer ships.
-        if configured.startswith("postgres://"):
-            configured = configured.replace("postgres://", "postgresql+psycopg://", 1)
-        return configured
+        return _with_driver(configured)
     return f"sqlite:///{Path(DEFAULT_DB_PATH).resolve()}"
+
+
+def _with_driver(url: str) -> str:
+    """Name the Postgres driver that is actually installed.
+
+    Hosts hand out bare `postgres://` (Heroku-style) or `postgresql://` (Neon) URLs, and
+    SQLAlchemy reads the bare form as psycopg2, which this project does not ship.
+    """
+    for bare in ("postgres://", "postgresql://"):
+        if url.startswith(bare):
+            return "postgresql+psycopg://" + url[len(bare):]
+    return url
 
 
 def is_sqlite(url: Optional[str] = None) -> bool:
@@ -179,13 +231,34 @@ def get_engine(db_path: Optional[Path | str] = None) -> Engine:
 
 
 def init_db(db_path: Optional[Path | str] = None) -> None:
-    """Create anything missing.
+    """Bring the schema up to the newest migration, once per database per process.
 
-    Fine while the schema only grows. A deployment that has to *change* a column under
-    live data needs migrations; that is the next thing to add here, not something
-    `create_all` can be stretched to cover.
+    Every store calls this from its constructor, so after the first call it has to cost
+    nothing. A schema change is a new file in `migrations/versions/`, never an edit to
+    the tables above alone -- `tests/test_migrations.py` fails when the two disagree.
+
+    A database built by `create_all` before migrations existed has the baseline tables
+    and no version row. It is stamped at the baseline rather than rebuilt, then upgraded
+    like any other.
     """
-    metadata.create_all(get_engine(db_path))
+    url = database_url(db_path)
+    if url in _migrated:
+        return
+
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config()
+    config.set_main_option("script_location", str(MIGRATIONS_DIR))
+    with get_engine(db_path).begin() as conn:
+        config.attributes["connection"] = conn
+        tables = set(inspect(conn).get_table_names())
+        if "alembic_version" not in tables and "users" in tables:
+            # A copy older than the newest baseline table is missing some of them too.
+            metadata.create_all(conn, tables=[metadata.tables[n] for n in _BASELINE_TABLES])
+            command.stamp(config, BASELINE_REVISION)
+        command.upgrade(config, "head")
+    _migrated.add(url)
 
 
 def reset_engines() -> None:
@@ -193,6 +266,7 @@ def reset_engines() -> None:
     for engine in _engines.values():
         engine.dispose()
     _engines.clear()
+    _migrated.clear()
 
 
 def upsert(engine: Engine, table: Table, values: dict, index_elements, update_cols):
@@ -200,14 +274,20 @@ def upsert(engine: Engine, table: Table, values: dict, index_elements, update_co
 
     SQLAlchemy Core has no dialect-neutral ON CONFLICT, and the two dialects spell it
     differently enough that every caller would otherwise carry this branch.
+
+    Pass `values=None` for a statement to run many rows through at once,
+    `conn.execute(stmt, rows)` -- one round trip instead of one per row, which matters
+    against a database across a network.
     """
     dialect = engine.dialect.name
     if dialect == "postgresql":
-        stmt = pg_insert(table).values(**values)
+        stmt = pg_insert(table)
     elif dialect == "sqlite":
-        stmt = sqlite_insert(table).values(**values)
+        stmt = sqlite_insert(table)
     else:
-        return insert(table).values(**values)
+        return insert(table) if values is None else insert(table).values(**values)
+    if values is not None:
+        stmt = stmt.values(**values)
     return stmt.on_conflict_do_update(
         index_elements=list(index_elements),
         set_={c: getattr(stmt.excluded, c) for c in update_cols},

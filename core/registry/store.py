@@ -1,134 +1,101 @@
-"""Company and job registry backed by SQLite."""
+"""Company and job registry.
+
+Public boards and the postings scraped from them, shared by every account and owned by
+none. The tables live in the main database (`core/store/db.py`), so a deployment keeps
+them without a disk of its own. Whether a given person applied to a job is private and
+lives in `job_matches`, never on these rows.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
-import sqlite3
 from typing import List, Optional, Tuple
+
+from sqlalchemy import func, nulls_last, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from core.scrapers.base import ATSProvider, CompanyBoard, JobPosting
 from core.scrapers.resolver import resolve_url
+from core.store.db import companies_table, get_engine, init_db, jobs_table, upsert
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "companies.db"
+# What a re-scan may overwrite. The discovery time is kept from the first sighting.
+_REFRESHED_JOB_COLUMNS = ("company", "title", "location", "apply_url", "updated_at")
+
+
+def _board(row) -> CompanyBoard:
+    return CompanyBoard(
+        company_name=row.name,
+        slug=row.slug,
+        provider=ATSProvider(row.provider),
+        board_url=row.board_url,
+        active=bool(row.active),
+        job_count=row.job_count,
+        last_scanned=row.last_scanned,
+    )
+
+
+def _timestamp_text(value) -> Optional[str]:
+    """The `YYYY-MM-DD HH:MM:SS` UTC text SQLite's CURRENT_TIMESTAMP used to return.
+
+    Postgres hands back an aware datetime in the session's zone and SQLite a naive UTC
+    one; both render the same way so nothing downstream sees which database it ran on.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc)
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    return str(value)
 
 
 class CompanyRegistry:
-    """SQLite-backed registry for known company ATS boards and staged jobs."""
+    """Known ATS boards and the jobs discovered on them."""
 
     def __init__(self, db_path: Optional[Path | str] = None):
-        self.db_path = Path(db_path or DEFAULT_DB_PATH).resolve()
+        init_db(db_path)
+        self.engine = get_engine(db_path)
         self._legacy_matches: dict[str, dict] = {}
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
-
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_db(self) -> None:
-        """Create database tables if they do not exist."""
-        with self._get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS companies (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    slug TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    board_url TEXT NOT NULL,
-                    career_url TEXT,
-                    verified INTEGER DEFAULT 1,
-                    active INTEGER DEFAULT 1,
-                    job_count INTEGER DEFAULT 0,
-                    last_scanned TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(provider, slug)
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS jobs (
-                    id TEXT PRIMARY KEY,
-                    company TEXT,
-                    company_slug TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    location TEXT,
-                    url TEXT NOT NULL,
-                    apply_url TEXT,
-                    is_internship INTEGER DEFAULT 0,
-                    status TEXT DEFAULT 'discovered',
-                    updated_at TEXT,
-                    discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_companies_provider_slug ON companies(provider, slug)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
-            for col in ["company", "stage", "applied_date", "notes"]:
-                try:
-                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
-                except sqlite3.OperationalError:
-                    pass
-            conn.commit()
 
     def add_company(self, board: CompanyBoard) -> bool:
         """Add or update a company board in the registry."""
-        with self._get_connection() as conn:
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO companies (name, slug, provider, board_url, active, job_count, last_scanned)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(provider, slug) DO UPDATE SET
-                        name=excluded.name,
-                        board_url=excluded.board_url,
-                        active=excluded.active,
-                        job_count=excluded.job_count,
-                        last_scanned=coalesce(excluded.last_scanned, companies.last_scanned)
-                    """,
-                    (
-                        board.company_name,
-                        board.slug,
-                        board.provider.value,
-                        board.board_url,
-                        1 if board.active else 0,
-                        board.job_count,
-                        board.last_scanned or datetime.now().isoformat(),
-                    ),
-                )
-                conn.commit()
-                return True
-            except Exception as e:
-                logger.error(f"Error adding company {board.company_name}: {e}")
-                return False
+        values = {
+            "name": board.company_name,
+            "slug": board.slug,
+            "provider": board.provider.value,
+            "board_url": board.board_url,
+            "active": board.active,
+            "job_count": board.job_count,
+            "last_scanned": board.last_scanned or datetime.now().isoformat(),
+        }
+        stmt = upsert(
+            self.engine, companies_table, values, ("provider", "slug"),
+            ("name", "board_url", "active", "job_count", "last_scanned"),
+        )
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(stmt)
+            return True
+        except SQLAlchemyError as e:
+            logger.error(f"Error adding company {board.company_name}: {e}")
+            return False
 
     def get_company(self, name_or_slug: str) -> Optional[CompanyBoard]:
         """Find a company by slug or name."""
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT name, slug, provider, board_url, active, job_count, last_scanned
-                FROM companies
-                WHERE lower(slug) = lower(?) OR lower(name) = lower(?)
-                LIMIT 1
-                """,
-                (name_or_slug, name_or_slug),
-            )
-            row = cursor.fetchone()
-            if row:
-                return CompanyBoard(
-                    company_name=row["name"],
-                    slug=row["slug"],
-                    provider=ATSProvider(row["provider"]),
-                    board_url=row["board_url"],
-                    active=bool(row["active"]),
-                    job_count=row["job_count"],
-                    last_scanned=row["last_scanned"],
-                )
-        return None
+        c = companies_table.c
+        needle = name_or_slug.lower()
+        query = (
+            select(companies_table)
+            .where(or_(func.lower(c.slug) == needle, func.lower(c.name) == needle))
+            .limit(1)
+        )
+        with self.engine.connect() as conn:
+            row = conn.execute(query).first()
+        return _board(row) if row else None
 
     def list_companies(
         self,
@@ -136,80 +103,59 @@ class CompanyRegistry:
         active_only: bool = True,
     ) -> List[CompanyBoard]:
         """List all company boards in the registry."""
-        query = "SELECT name, slug, provider, board_url, active, job_count, last_scanned FROM companies WHERE 1=1"
-        params: list = []
-
+        c = companies_table.c
+        query = select(companies_table)
         if provider:
-            query += " AND provider = ?"
-            params.append(provider.value)
+            query = query.where(c.provider == provider.value)
         if active_only:
-            query += " AND active = 1"
+            query = query.where(c.active.is_(True))
+        query = query.order_by(c.name.asc())
 
-        query += " ORDER BY name ASC"
-
-        boards: List[CompanyBoard] = []
-        with self._get_connection() as conn:
-            cursor = conn.execute(query, params)
-            for row in cursor.fetchall():
-                boards.append(
-                    CompanyBoard(
-                        company_name=row["name"],
-                        slug=row["slug"],
-                        provider=ATSProvider(row["provider"]),
-                        board_url=row["board_url"],
-                        active=bool(row["active"]),
-                        job_count=row["job_count"],
-                        last_scanned=row["last_scanned"],
-                    )
-                )
-        return boards
+        with self.engine.connect() as conn:
+            return [_board(row) for row in conn.execute(query)]
 
     def count_companies(self) -> int:
         """Return total number of registered companies."""
-        with self._get_connection() as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM companies")
-            return cursor.fetchone()[0]
+        with self.engine.connect() as conn:
+            return conn.execute(select(func.count()).select_from(companies_table)).scalar_one()
 
     def upsert_jobs(self, jobs: List[JobPosting]) -> int:
         """Insert or update discovered jobs, returns count of new jobs inserted."""
-        inserted = 0
-        with self._get_connection() as conn:
-            for job in jobs:
-                job_key = f"{job.provider.value}:{job.company_slug}:{job.id}"
-                cursor = conn.execute(
-                    """
-                    INSERT INTO jobs (id, company, company_slug, provider, title, location, url, apply_url, is_internship, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        company=excluded.company,
-                        title=excluded.title,
-                        location=excluded.location,
-                        apply_url=excluded.apply_url,
-                        updated_at=excluded.updated_at
-                    """,
-                    (
-                        job_key,
-                        job.company,
-                        job.company_slug,
-                        job.provider.value,
-                        job.title,
-                        job.location,
-                        job.url,
-                        job.apply_url,
-                        1 if job.is_internship else 0,
-                        job.updated_at,
-                    ),
+        rows = {}
+        for job in jobs:
+            key = f"{job.provider.value}:{job.company_slug}:{job.id}"
+            rows[key] = {
+                "id": key,
+                "company": job.company,
+                "company_slug": job.company_slug,
+                "provider": job.provider.value,
+                "title": job.title,
+                "location": job.location,
+                "url": job.url,
+                "apply_url": job.apply_url,
+                "is_internship": job.is_internship,
+                "updated_at": job.updated_at,
+            }
+        if not rows:
+            return 0
+
+        keys = list(rows)
+        stmt = upsert(self.engine, jobs_table, None, ("id",), _REFRESHED_JOB_COLUMNS)
+        with self.engine.begin() as conn:
+            existing: set[str] = set()
+            # Chunked so a large feed stays under both databases' bound-parameter limits.
+            for i in range(0, len(keys), 500):
+                chunk = keys[i:i + 500]
+                existing.update(
+                    conn.execute(select(jobs_table.c.id).where(jobs_table.c.id.in_(chunk))).scalars()
                 )
-                if cursor.rowcount > 0:
-                    inserted += 1
-            conn.commit()
-        return inserted
+            conn.execute(stmt, list(rows.values()))
+        return len(rows.keys() - existing)
 
     def count_jobs(self) -> int:
         """Return total number of discovered jobs."""
-        with self._get_connection() as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM jobs")
-            return cursor.fetchone()[0]
+        with self.engine.connect() as conn:
+            return conn.execute(select(func.count()).select_from(jobs_table)).scalar_one()
 
     def count_applied_jobs(self) -> int:
         """Compatibility count for callers still using instance-local reconciliation."""
@@ -217,15 +163,24 @@ class CompanyRegistry:
 
     def job_records(self) -> list[dict]:
         """Return public job metadata for matching without application state columns."""
-        with self._get_connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, company, company_slug, provider, title, location, url,
-                       apply_url, is_internship, updated_at, discovered_at
-                FROM jobs
-                """
-            ).fetchall()
-        return [dict(row) for row in rows]
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(jobs_table)).mappings().all()
+        return [{**row, "discovered_at": _timestamp_text(row["discovered_at"])} for row in rows]
+
+    def find_job(self, url: Optional[str] = None, job_id: Optional[str] = None) -> Optional[dict]:
+        """One job by its exact posting URL or registry id, whichever is given."""
+        j = jobs_table.c
+        conditions = []
+        if url:
+            conditions.append(j.url == url)
+        if job_id:
+            conditions.append(j.id == job_id)
+        if not conditions:
+            return None
+        query = select(j.id, j.company, j.company_slug, j.title, j.url).where(or_(*conditions))
+        with self.engine.connect() as conn:
+            row = conn.execute(query.limit(1)).mappings().first()
+        return dict(row) if row else None
 
     def reconcile_with_tracker(self, applications: List[dict]) -> Tuple[int, List[dict]]:
         """Compatibility shim that no longer writes private state onto public jobs."""
@@ -260,35 +215,37 @@ class CompanyRegistry:
         exclude_ids: Optional[set[str]] = None,
     ) -> List[JobPosting]:
         """Query public jobs, optionally excluding caller-owned confirmed matches."""
-        query = "SELECT id, company, company_slug, provider, title, location, url, apply_url, is_internship, status, stage, applied_date, notes, updated_at, discovered_at FROM jobs WHERE 1=1"
-        params: list = []
+        j = jobs_table.c
+        query = select(jobs_table)
 
         hidden = set(exclude_ids or ())
         if hide_applied:
             hidden.update(self._legacy_matches)
         if hidden:
-            placeholders = ",".join("?" for _ in hidden)
-            query += f" AND id NOT IN ({placeholders})"
-            params.extend(sorted(hidden))
+            query = query.where(j.id.not_in(sorted(hidden)))
 
         if provider:
-            query += " AND provider = ?"
-            params.append(provider.value)
+            query = query.where(j.provider == provider.value)
 
         if keywords:
-            kw_clauses = []
+            clauses = []
             for kw in keywords:
-                kw_clauses.append("(lower(title) LIKE ? OR lower(location) LIKE ? OR lower(company) LIKE ?)")
-                params.extend([f"%{kw.lower()}%", f"%{kw.lower()}%", f"%{kw.lower()}%"])
-            query += f" AND ({' OR '.join(kw_clauses)})"
+                pattern = f"%{kw.lower()}%"
+                clauses.extend([
+                    func.lower(j.title).like(pattern),
+                    func.lower(j.location).like(pattern),
+                    func.lower(j.company).like(pattern),
+                ])
+            query = query.where(or_(*clauses))
 
-        query += " ORDER BY updated_at DESC, discovered_at DESC LIMIT ?"
-        params.append(limit)
+        # Postgres sorts NULLs first under DESC and SQLite last; say which one is meant.
+        query = query.order_by(nulls_last(j.updated_at.desc()), nulls_last(j.discovered_at.desc()))
+        if limit:
+            query = query.limit(limit)
 
         jobs: List[JobPosting] = []
-        with self._get_connection() as conn:
-            cursor = conn.execute(query, params)
-            for r in cursor.fetchall():
+        with self.engine.connect() as conn:
+            for r in conn.execute(query).mappings():
                 company_name = r["company"] or r["company_slug"].replace("-", " ").replace(".", " ").title()
                 legacy = self._legacy_matches.get(r["id"])
                 jobs.append(
@@ -307,7 +264,7 @@ class CompanyRegistry:
                         applied_date=legacy["date_applied"] if legacy else None,
                         notes=legacy["notes"] if legacy else None,
                         updated_at=r["updated_at"],
-                        discovered_at=str(r["discovered_at"]) if r["discovered_at"] else None,
+                        discovered_at=_timestamp_text(r["discovered_at"]),
                     )
                 )
         return jobs

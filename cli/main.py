@@ -105,11 +105,7 @@ async def run_stage(
                 print(f"     A: {preview}")
 
     # 5. Look up job info from registry or construct fallback
-    with registry._get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, company, company_slug, title, url FROM jobs WHERE url = ? OR (id = ? AND id != '')",
-            (url, job_id or ""),
-        ).fetchone()
+    row = registry.find_job(url=url, job_id=job_id)
 
     initial_company = ""
     initial_title = ""
@@ -407,11 +403,9 @@ def main():
         target_url = args.url
         # If user passed a job key instead of URL, resolve from DB
         if not target_url.startswith("http"):
-            reg = CompanyRegistry()
-            with reg._get_connection() as conn:
-                row = conn.execute("SELECT url FROM jobs WHERE id = ? LIMIT 1", (target_url,)).fetchone()
-                if row:
-                    target_url = row["url"]
+            row = CompanyRegistry().find_job(job_id=target_url)
+            if row:
+                target_url = row["url"]
 
         exit_code = asyncio.run(
             run_stage(

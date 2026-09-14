@@ -48,16 +48,13 @@ def _sheet_row(company: str, role: str, link: str = "") -> dict:
 
 @pytest.fixture
 def tracker_state(tmp_path, monkeypatch):
-    import core.registry.store as registry_mod
     import core.store.db as db_mod
     import web.auth as auth
     import web.server as server
 
     app_db = tmp_path / "jobstager.db"
-    registry_db = tmp_path / "companies.db"
     db_mod.reset_engines()
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", app_db)
-    monkeypatch.setattr(registry_mod, "DEFAULT_DB_PATH", registry_db)
 
     users = UserStore(app_db)
     profiles = ProfileStore(app_db)
@@ -75,7 +72,7 @@ def tracker_state(tmp_path, monkeypatch):
     profiles.save(first, blank)
     profiles.save(second, blank)
 
-    registry = CompanyRegistry(registry_db)
+    registry = CompanyRegistry(app_db)
     auth.users = server.users = users
     auth.profiles = server.profiles = profiles
     monkeypatch.setattr(server, "CompanyRegistry", lambda: registry)

@@ -26,7 +26,12 @@ JobStager is a local automation agent that pre-fills ATS application forms (Gree
 - `core/store/db.py`: SQLAlchemy schema for both installs. `DATABASE_URL` unset means the
   local SQLite file; a deployment points it at Postgres and nothing else changes.
 - `core/store/crypto.py`: Encrypts EEO self-identification at rest (`JOBSTAGER_SECRET_KEY`).
-- `core/registry/`: SQLite company registry (`companies.db`) and job listings store.
+- `core/store/migrations/`: Alembic migrations, applied automatically by `init_db` on first use
+  of each database. A schema change is a new revision file, not an edit to `db.py` alone —
+  `tests/test_migrations.py` fails when the two drift. Set `JOBSTAGER_TEST_DATABASE_URL` to a
+  disposable Postgres to run the Postgres test (it drops every table there).
+- `core/registry/`: company and job registry, stored in the main database (`companies`, `jobs`).
+  The old standalone `companies.db` imports with `uv run python3 -m core.store.migrate import-registry`.
 - `core/tracker/local_db.py`: the primary, per-user in-app application tracker.
 - `core/tracker/matches.py`: private matches between discovered jobs and application history.
   Confirmed Sheet matches are hidden from Jobs; possible matches remain visible with a warning.
