@@ -92,6 +92,42 @@ def test_migrations_build_exactly_the_schema_the_code_declares(tmp_path):
     assert _drift(db) == []
 
 
+def test_a_stamped_database_gains_the_columns_it_never_got(tmp_path):
+    """The case above builds `users` from today's metadata, so it always had every column.
+
+    A real database from before migrations did not: it was created by an older
+    `create_all` and then stamped, so a column added to the model afterwards was never
+    created on disk and no migration had reason to add it. This reproduces that shape
+    with raw SQL and checks the repair lands.
+    """
+    db = tmp_path / "stamped.db"
+    with get_engine(db).begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                handle TEXT NOT NULL UNIQUE,
+                email TEXT,
+                password_hash TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text(
+            "INSERT INTO users (handle, password_hash, password_salt)"
+            " VALUES ('kept', 'h', 's')"
+        ))
+
+    init_db(db)
+
+    assert _version(db) == HEAD
+    with get_engine(db).connect() as conn:
+        columns = {r[1] for r in conn.execute(text("PRAGMA table_info(users)"))}
+        assert "email_verified" in columns
+        assert conn.execute(text("SELECT handle FROM users")).scalar_one() == "kept"
+        # The account survives an external sign-in writing the column it was missing.
+        conn.execute(text("SELECT email_verified FROM users")).scalar_one()
+
+
 def test_a_database_from_before_migrations_is_stamped_not_rebuilt(tmp_path):
     db = tmp_path / "old.db"
     users = metadata.tables["users"]
