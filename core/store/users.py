@@ -14,7 +14,8 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from core.store.db import (
-    get_engine, init_db, login_attempts_table, sessions_table, users_table,
+    get_engine, init_db, login_attempts_table, oauth_identities_table, sessions_table,
+    users_table,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,11 +62,18 @@ class UserStore:
             "sha256", password.encode(), bytes.fromhex(salt), PBKDF2_ROUNDS
         ).hex()
 
-    def create_user(self, handle: str, password: str, email: Optional[str] = None) -> int:
+    def create_user(
+        self,
+        handle: str,
+        password: Optional[str],
+        email: Optional[str] = None,
+        email_verified: bool = False,
+    ) -> int:
+        """Create an account. `password` is None only for an external sign-in."""
         handle = handle.strip().lower()
         if not handle:
             raise ValueError("handle is required")
-        if len(password) < 8:
+        if password is not None and len(password) < 8:
             raise ValueError("password must be at least 8 characters")
         salt = os.urandom(16).hex()
         with self.engine.begin() as conn:
@@ -74,8 +82,9 @@ class UserStore:
                     insert(users_table).values(
                         handle=handle,
                         email=email,
-                        password_hash=self._hash(password, salt),
-                        password_salt=salt,
+                        password_hash=self._hash(password, salt) if password else None,
+                        password_salt=salt if password else None,
+                        email_verified=email_verified,
                     )
                 )
             except IntegrityError as err:
@@ -89,8 +98,10 @@ class UserStore:
                     users_table.c.id, users_table.c.password_hash, users_table.c.password_salt
                 ).where(users_table.c.handle == handle.strip().lower())
             ).first()
-        if row is None:
-            # Spend the same work on a missing handle so timing does not reveal it.
+        if row is None or row.password_hash is None:
+            # Spend the same work on a missing handle so timing does not reveal it. An
+            # account that signs in with Google has no hash to compare against and takes
+            # the same path: it is indistinguishable from a handle nobody has taken.
             self._hash(password, os.urandom(16).hex())
             return None
         if not secrets.compare_digest(self._hash(password, row.password_salt), row.password_hash):
@@ -183,6 +194,112 @@ class UserStore:
                 )
             )
         self.end_all_sessions(user_id)
+
+    # -- external sign-in -------------------------------------------------
+
+    def _free_handle(self, preferred: str) -> str:
+        """A handle nobody holds, derived from the one the provider suggests."""
+        base = "".join(c for c in preferred.strip().lower() if c.isalnum() or c in "._-")
+        base = base.strip("._-")[:100] or "user"
+        with self.engine.connect() as conn:
+            taken = {
+                r.handle for r in conn.execute(select(users_table.c.handle)).fetchall()
+            }
+        if base not in taken:
+            return base
+        for n in range(2, 1000):
+            candidate = f"{base}{n}"
+            if candidate not in taken:
+                return candidate
+        return f"{base}-{secrets.token_hex(4)}"
+
+    def user_for_identity(self, provider: str, subject: str) -> Optional[int]:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(oauth_identities_table.c.user_id).where(
+                    oauth_identities_table.c.provider == provider,
+                    oauth_identities_table.c.subject == subject,
+                )
+            ).first()
+        return int(row.user_id) if row else None
+
+    def link_identity(
+        self, user_id: int, provider: str, subject: str, email: Optional[str]
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(insert(oauth_identities_table).values(
+                user_id=user_id, provider=provider, subject=subject, email=email,
+                created_at=_now(),
+            ))
+
+    def _user_for_verified_email(self, email: str) -> Optional[int]:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(users_table.c.id).where(
+                    func.lower(users_table.c.email) == email.strip().lower()
+                )
+            ).first()
+        return int(row.id) if row else None
+
+    def resolve_oauth_user(
+        self,
+        provider: str,
+        subject: str,
+        email: Optional[str],
+        email_verified: bool,
+        suggested_handle: Optional[str] = None,
+    ) -> tuple[int, bool]:
+        """The account behind an external sign-in, creating one if this is the first.
+
+        Returns (user_id, created). Three cases, in order:
+
+        1. The subject is already linked -- that is the account, whatever the email says
+           now. Google lets a workspace address be changed and later reassigned to a
+           different person, so matching on email first would eventually hand one
+           person's account to another.
+        2. No link, but a local account carries the same address **and Google says it
+           verified that address**. That is the person who signed up with a password and
+           is now using the button; link the two rather than stranding them beside a
+           duplicate. Without the verified flag this step is an account takeover -- an
+           unverified address proves nothing -- so it is skipped entirely.
+        3. Neither: a new account, with no password and nothing to reset.
+        """
+        existing = self.user_for_identity(provider, subject)
+        if existing is not None:
+            return existing, False
+
+        if email and email_verified:
+            linked = self._user_for_verified_email(email)
+            if linked is not None:
+                self.link_identity(linked, provider, subject, email)
+                with self.engine.begin() as conn:
+                    conn.execute(
+                        update(users_table).where(users_table.c.id == linked)
+                        .values(email_verified=True)
+                    )
+                return linked, False
+
+        handle = self._free_handle(
+            suggested_handle or (email.split("@")[0] if email else "user")
+        )
+        user_id = self.create_user(handle, None, email, email_verified=email_verified)
+        self.link_identity(user_id, provider, subject, email)
+        return user_id, True
+
+    def identities_for(self, user_id: int) -> list[str]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(oauth_identities_table.c.provider)
+                .where(oauth_identities_table.c.user_id == user_id)
+            ).fetchall()
+        return [r.provider for r in rows]
+
+    def has_password(self, user_id: int) -> bool:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(users_table.c.password_hash).where(users_table.c.id == user_id)
+            ).first()
+        return bool(row and row.password_hash)
 
     # -- throttling -------------------------------------------------------
 

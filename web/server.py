@@ -8,13 +8,14 @@ import logging
 import os
 from pathlib import Path
 import re
+import secrets
 from typing import Dict, List, Optional
 from fastapi import (
     BackgroundTasks, Cookie, Depends, FastAPI, File, Form, HTTPException, Request,
     Response, UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -24,10 +25,12 @@ from core.store.profiles import ProfileStore
 from core.store.users import UserStore
 from web.auth import (
     LOGIN_LIMIT, LOGIN_WINDOW, REGISTER_LIMIT, REGISTER_WINDOW,
-    check_deployment_config, clear_session_cookie, client_ip, current_user,
-    optional_user, profile_for, profiles, set_session_cookie, setup_required,
+    check_deployment_config, clear_oauth_flow_cookie, clear_session_cookie, client_ip,
+    current_user, optional_user, password_auth_enabled, profile_for, profiles,
+    require_password_auth, set_oauth_flow_cookie, set_session_cookie, setup_required,
     single_tenant, throttle, users,
 )
+from web import oauth_google
 from core.registry.ingest import ingest_simplify_feed
 from core.registry.roles import all_families, classify_role, role_counts
 from core.registry.store import CompanyRegistry
@@ -119,35 +122,23 @@ class ProfileUpdateRequest(BaseModel):
     custom_answers: Optional[Dict[str, str]] = None
 
 
-@app.get("/api/auth/status")
-async def auth_status(user_id: Optional[int] = Depends(optional_user)):
-    """Whether anyone is signed in, and whether this install still needs its first account."""
-    return {
-        "setup_required": setup_required(),
-        "signed_in": user_id is not None,
-        "handle": users.handle_for(user_id) if user_id else None,
-    }
+def seed_new_account(
+    user_id: int, email: Optional[str] = None,
+    first_name: str = "", last_name: str = "",
+) -> None:
+    """Give a brand-new account its starting profile.
 
-
-@app.post("/api/auth/register")
-async def register(body: CredentialsRequest, request: Request, response: Response):
-    throttle(f"register:{client_ip(request)}", REGISTER_LIMIT, REGISTER_WINDOW)
-    try:
-        user_id = users.create_user(body.handle, body.password, body.email)
-    except ValueError as err:
-        raise HTTPException(status_code=400, detail=str(err))
-
-    # A new account starts blank. The one exception is the very first account on a
-    # personal install, which adopts the operator's own profile.yaml so there is nothing
-    # to retype -- on a shared deployment that same line would hand the first stranger
-    # who signed up the operator's address, GPA and EEO answers.
-    blank = CandidateProfile.model_validate(
+    Blank, with one exception: the very first account on a personal install adopts the
+    operator's own profile.yaml so there is nothing to retype. On a shared deployment
+    that same line would hand the first stranger who signed up the operator's address,
+    GPA and EEO answers, which is why it is gated on single_tenant().
+    """
+    seed = CandidateProfile.model_validate(
         {"candidate": {
-            "first_name": "", "last_name": "", "email": body.email or "",
+            "first_name": first_name, "last_name": last_name, "email": email or "",
             "phone": "", "location": "",
         }}
     )
-    seed = blank
     if single_tenant() and users.count_users() == 1:
         try:
             seed = CandidateProfile.model_validate(load_profile().model_dump(mode="json"))
@@ -155,12 +146,38 @@ async def register(body: CredentialsRequest, request: Request, response: Respons
             logger.info(f"No local profile to adopt for the first account: {err}")
     profiles.save(user_id, seed)
 
+
+@app.get("/api/auth/status")
+async def auth_status(user_id: Optional[int] = Depends(optional_user)):
+    """Whether anyone is signed in, and whether this install still needs its first account."""
+    return {
+        "setup_required": setup_required(),
+        "signed_in": user_id is not None,
+        "handle": users.handle_for(user_id) if user_id else None,
+        # The sign-in screen renders from these rather than guessing: a deployment can
+        # offer Google alone, while a personal install usually has only a password.
+        "password_auth": password_auth_enabled(),
+        "google_auth": oauth_google.configured(),
+    }
+
+
+@app.post("/api/auth/register")
+async def register(body: CredentialsRequest, request: Request, response: Response):
+    require_password_auth()
+    throttle(f"register:{client_ip(request)}", REGISTER_LIMIT, REGISTER_WINDOW)
+    try:
+        user_id = users.create_user(body.handle, body.password, body.email)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+    seed_new_account(user_id, body.email)
     set_session_cookie(response, users.start_session(user_id))
     return {"status": "registered", "user_id": user_id, "handle": body.handle}
 
 
 @app.post("/api/auth/login")
 async def login(body: CredentialsRequest, request: Request, response: Response):
+    require_password_auth()
     # Two buckets: one stops a flood from a single address, the other stops a slow
     # spray across many addresses from grinding away at one account.
     ip_bucket = f"login-ip:{client_ip(request)}"
@@ -176,6 +193,77 @@ async def login(body: CredentialsRequest, request: Request, response: Response):
     users.clear_attempts(handle_bucket)
     set_session_cookie(response, users.start_session(user_id))
     return {"status": "signed_in", "handle": body.handle}
+
+
+@app.get("/api/auth/google/start")
+async def google_start(request: Request):
+    """Send the browser to Google, remembering what has to come back."""
+    if not oauth_google.configured():
+        raise HTTPException(status_code=404, detail="Google sign-in is not configured.")
+    # Throttled on the same budget as registering: this endpoint can mint an account.
+    throttle(f"oauth-start:{client_ip(request)}", REGISTER_LIMIT * 4, REGISTER_WINDOW)
+    url, state, verifier = oauth_google.start(str(request.base_url))
+    response = RedirectResponse(url, status_code=302)
+    set_oauth_flow_cookie(response, f"{state}:{verifier}")
+    return response
+
+
+def _failed_sign_in(reason: str) -> RedirectResponse:
+    """Back to the sign-in screen with a short reason, never Google's raw error."""
+    response = RedirectResponse(f"/?auth_error={reason}", status_code=302)
+    clear_oauth_flow_cookie(response)
+    return response
+
+
+@app.get("/api/auth/google/callback")
+async def google_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    jobstager_oauth_flow: Optional[str] = Cookie(default=None),
+):
+    """Turn Google's authorization code into a session on this install.
+
+    The browser arrives here by redirect, so nothing can be returned as JSON -- every
+    outcome is a redirect back to the dashboard, carrying a reason when it failed.
+    """
+    if error or not code:
+        # The ordinary case is someone pressing Cancel on Google's consent screen.
+        logger.info(f"Google sign-in returned without a code: {error or 'no code'}")
+        return _failed_sign_in("cancelled")
+
+    if not jobstager_oauth_flow or ":" not in jobstager_oauth_flow:
+        # No cookie means this request did not start here: a stale tab, a bookmarked
+        # callback, or a forged link trying to sign someone into an account of its own.
+        return _failed_sign_in("expired")
+
+    expected_state, verifier = jobstager_oauth_flow.split(":", 1)
+    if not state or not secrets.compare_digest(state, expected_state):
+        logger.warning("Google sign-in state mismatch; refusing the callback")
+        return _failed_sign_in("expired")
+
+    try:
+        identity = await oauth_google.exchange(code, verifier, str(request.base_url))
+    except Exception as err:
+        logger.warning(f"Google sign-in failed: {err}")
+        return _failed_sign_in("failed")
+
+    user_id, created = users.resolve_oauth_user(
+        oauth_google.PROVIDER,
+        identity.subject,
+        identity.email,
+        identity.email_verified,
+        suggested_handle=identity.email.split("@")[0] if identity.email else None,
+    )
+    if created:
+        first, _, last = (identity.name or "").partition(" ")
+        seed_new_account(user_id, identity.email, first_name=first, last_name=last)
+
+    response = RedirectResponse("/", status_code=302)
+    clear_oauth_flow_cookie(response)
+    set_session_cookie(response, users.start_session(user_id))
+    return response
 
 
 @app.post("/api/auth/logout")

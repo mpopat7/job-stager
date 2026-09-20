@@ -20,6 +20,7 @@ from core.config.schema import CandidateProfile
 from core.store import crypto
 from core.store.profiles import ProfileStore
 from core.store.users import UserStore
+from web import oauth_google
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,40 @@ def clear_session_cookie(response: Response) -> None:
 
 def _secure_cookies() -> bool:
     return os.getenv("JOBSTAGER_SECURE_COOKIES", "").strip() in ("1", "true", "yes")
+
+
+def password_auth_enabled() -> bool:
+    """Whether handle-and-password sign-in is offered.
+
+    A self-hosted or personal install wants it: there is no OAuth client to register and
+    no internet dependency to sign in. A hosted deployment sets JOBSTAGER_PASSWORD_AUTH=0
+    and runs Google-only, which is what removes the need for an email service -- no
+    verification mail and no reset flow, because there is no password to reset.
+    """
+    return os.getenv("JOBSTAGER_PASSWORD_AUTH", "1").strip() not in ("0", "false", "no")
+
+
+def require_password_auth() -> None:
+    if not password_auth_enabled():
+        raise HTTPException(
+            status_code=404, detail="This install signs in with Google."
+        )
+
+
+def set_oauth_flow_cookie(response: Response, value: str) -> None:
+    """Carry the state and PKCE verifier across the trip to Google and back."""
+    response.set_cookie(
+        oauth_google.FLOW_COOKIE,
+        value,
+        httponly=True,
+        samesite="lax",
+        max_age=oauth_google.FLOW_TTL_SECONDS,
+        secure=_secure_cookies(),
+    )
+
+
+def clear_oauth_flow_cookie(response: Response) -> None:
+    response.delete_cookie(oauth_google.FLOW_COOKIE)
 
 
 def setup_required() -> bool:
@@ -160,6 +195,10 @@ def check_deployment_config() -> None:
         )
     if not _secure_cookies():
         missing.append("JOBSTAGER_SECURE_COOKIES=1 (session cookies would travel in the clear)")
+    if not password_auth_enabled() and not oauth_google.configured():
+        missing.append(
+            "GOOGLE_OAUTH_CLIENT_ID/SECRET (password sign-in is off, so nobody could sign in)"
+        )
     if missing:
         raise RuntimeError(
             "JOBSTAGER_MULTI_TENANT is set but these are not: " + "; ".join(missing)

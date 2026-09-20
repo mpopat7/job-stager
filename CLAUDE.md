@@ -26,6 +26,9 @@ JobStager is a local automation agent that pre-fills ATS application forms (Gree
 - `core/store/db.py`: SQLAlchemy schema for both installs. `DATABASE_URL` unset means the
   local SQLite file; a deployment points it at Postgres and nothing else changes.
 - `core/store/crypto.py`: Encrypts EEO self-identification at rest (`JOBSTAGER_SECRET_KEY`).
+- `web/oauth_google.py`: Sign in with Google — scopes `openid email profile` only, all
+  non-sensitive. Identities are keyed on the Google subject, never the email, because an
+  address can be renamed and later reassigned to someone else.
 - `core/store/migrations/`: Alembic migrations, applied automatically by `init_db` on first use
   of each database. A schema change is a new revision file, not an edit to `db.py` alone —
   `tests/test_migrations.py` fails when the two drift. Set `JOBSTAGER_TEST_DATABASE_URL` to a
@@ -51,6 +54,14 @@ the answer reaches the page.
 Choice buttons commit for real via `native_click` (a synthetic JS `.click()` inside `evaluate()`
 does not move React 18 state) — see `test_choice_controls_commit_state_in_tracked_forms`, which
 fails if that regresses.
+
+## Sign-in
+A personal install uses a handle and password and needs no configuration. A shared
+deployment sets `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET` and `JOBSTAGER_PASSWORD_AUTH=0` to run
+Google-only, which is what removes the need for an email service: nothing to verify and no
+password to reset. An account created through Google has no password at all, so
+`UserStore.verify` refuses a null hash on the same branch as a missing handle. See the
+README for the full variable table.
 
 ## Personal install vs shared deployment
 `JOBSTAGER_MULTI_TENANT=1` says strangers share this process. It turns off three things that

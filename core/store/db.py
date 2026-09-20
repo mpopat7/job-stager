@@ -37,8 +37,11 @@ users_table = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("handle", String(120), nullable=False, unique=True),
     Column("email", String(320)),
-    Column("password_hash", Text, nullable=False),
-    Column("password_salt", Text, nullable=False),
+    # Nullable because a Google account never sets one. A row with no hash can only be
+    # signed into through the provider that owns it -- `verify` refuses it outright
+    # rather than comparing against an empty string.
+    Column("password_hash", Text),
+    Column("password_salt", Text),
     Column("email_verified", Boolean, nullable=False, server_default="0"),
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
 )
@@ -121,6 +124,22 @@ login_attempts_table = Table(
            autoincrement=True),
     Column("bucket", String(200), nullable=False, index=True),
     Column("attempted_at", DateTime(timezone=True), nullable=False),
+)
+
+# An account's external sign-ins. Separate from `users` rather than a pair of columns on
+# it, because a person may eventually hold more than one and because the subject -- not
+# the email -- is what identifies them: Google addresses can be changed and reassigned,
+# the subject never is.
+oauth_identities_table = Table(
+    "oauth_identities", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+           index=True),
+    Column("provider", String(40), nullable=False),
+    Column("subject", String(255), nullable=False),
+    Column("email", String(320)),
+    Column("created_at", DateTime(timezone=True), server_default=func.now()),
+    UniqueConstraint("provider", "subject", name="uq_identity_per_provider"),
 )
 
 # The public registry: boards and the postings scraped from them. It used to be its own

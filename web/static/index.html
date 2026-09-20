@@ -1175,18 +1175,29 @@
           return true;
         }
         authMode = st.setup_required ? 'register' : 'login';
+        // Which sign-in routes this install actually offers. A hosted deployment runs
+        // Google-only so it needs no mail service; a personal install has no OAuth
+        // client registered and runs on a password alone.
+        const pw = st.password_auth !== false;
+        const google = st.google_auth === true;
         document.getElementById('auth-title').textContent =
           authMode === 'register' ? 'Create your account' : 'Sign in';
         document.getElementById('auth-sub').textContent =
           authMode === 'register'
-            ? 'First run. This imports your existing profile.yaml.'
+            ? (pw ? 'First run. This imports your existing profile.yaml.'
+                  : 'Your profile holds an address and self-identification, so it sits behind an account.')
             : 'Your profile holds an address and self-identification, so it sits behind an account.';
         document.getElementById('auth-btn').textContent =
           authMode === 'register' ? 'Create account' : 'Sign in';
         document.getElementById('auth-pw').autocomplete =
           authMode === 'register' ? 'new-password' : 'current-password';
+        document.getElementById('auth-google').classList.toggle('hidden', !google);
+        document.getElementById('auth-or').classList.toggle('hidden', !(google && pw));
+        document.getElementById('auth-password-fields').classList.toggle('hidden', !pw);
+        document.getElementById('auth-btn').classList.toggle('hidden', !pw);
         document.getElementById('auth-cohort-step')
-          .classList.toggle('hidden', authMode !== 'register');
+          .classList.toggle('hidden', !(pw && authMode === 'register'));
+        showAuthError();
         overlay.classList.remove('hidden');
         overlay.classList.add('flex');
         return false;
@@ -1225,6 +1236,22 @@
         await refreshAuth();
         location.reload();
       } catch (err) { status.textContent = 'Failed.'; }
+    }
+
+    const AUTH_ERRORS = {
+      cancelled: 'Sign-in cancelled.',
+      expired: 'That sign-in expired. Try again.',
+      failed: 'Google could not sign you in.',
+    };
+
+    function showAuthError() {
+      // The callback is a redirect, so a failure can only come back in the URL. Clear it
+      // once read, or a refresh re-shows an error about a sign-in already abandoned.
+      const reason = new URLSearchParams(location.search).get('auth_error');
+      if (!reason) return;
+      document.getElementById('auth-status').textContent =
+        AUTH_ERRORS[reason] || 'Sign-in failed.';
+      history.replaceState(null, '', location.pathname + location.hash);
     }
 
     function bindAuthEnter() {
@@ -1461,10 +1488,29 @@
         <h2 class="text-sm font-bold text-white tracking-tight font-mono" id="auth-title">Sign in</h2>
         <p class="text-[11px] text-[#71717a] font-mono" id="auth-sub">Your profile holds an address and self-identification, so it sits behind an account.</p>
       </div>
+      <div id="auth-google" class="hidden space-y-3">
+        <a href="/api/auth/google/start"
+           class="flex items-center justify-center gap-2 w-full px-4 py-2 rounded text-xs font-medium text-[#3c4043] bg-white hover:bg-zinc-100 transition font-sans no-underline">
+          <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true">
+            <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/>
+            <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/>
+            <path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33z"/>
+            <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/>
+          </svg>
+          Continue with Google
+        </a>
+        <div id="auth-or" class="hidden flex items-center gap-2">
+          <span class="h-px flex-1 bg-[#27272a]"></span>
+          <span class="text-[10px] text-[#52525b] font-mono">or</span>
+          <span class="h-px flex-1 bg-[#27272a]"></span>
+        </div>
+      </div>
+      <div id="auth-password-fields" class="space-y-4">
       <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Handle</span>
         <input id="auth-handle" autocomplete="username" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" /></label>
       <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Password</span>
         <input id="auth-pw" type="password" autocomplete="current-password" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" /></label>
+      </div>
       <div id="auth-cohort-step" class="hidden space-y-2 pt-1 border-t border-[#27272a]">
         <p class="text-[11px] text-[#a1a1aa] font-mono leading-relaxed">
           Which graduation years should JobStager target? It reads each posting and attaches
@@ -1475,7 +1521,7 @@
       </div>
       <div class="flex items-center justify-between gap-3 pt-1">
         <span class="text-[11px] text-[#71717a] font-mono" id="auth-status"></span>
-        <button onclick="submitAuth()" id="auth-btn" class="px-4 py-1.5 rounded text-xs font-medium text-black bg-emerald-500 hover:bg-emerald-400 cursor-pointer transition font-mono">Sign in</button>
+        <button onclick="submitAuth()" id="auth-btn" class="hidden px-4 py-1.5 rounded text-xs font-medium text-black bg-emerald-500 hover:bg-emerald-400 cursor-pointer transition font-mono">Sign in</button>
       </div>
     </div>
   </div>

@@ -273,3 +273,28 @@ experience_highlights:
   - Periodic background scraper workers to feed a hosted job queue.
   - Stripe subscription billing integration.
   - Public GitHub release and Show HN launch.
+
+## Sign-in
+
+A personal install signs in with a handle and password and needs no configuration.
+
+A deployment that strangers share runs on Google instead, which is what lets it skip an
+email service entirely -- there is no verification mail to send and no password to reset.
+Register an OAuth client at <https://console.cloud.google.com/apis/credentials> (type
+*Web application*), add the callback as an authorized redirect URI, and set:
+
+| Variable | Meaning |
+|---|---|
+| `GOOGLE_OAUTH_CLIENT_ID` | From the console. Google sign-in is offered only when this and the secret are both set. |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | From the console. |
+| `JOBSTAGER_PUBLIC_URL` | The address users reach, e.g. `https://jobstager.example.com`. The callback is derived as `<url>/api/auth/google/callback`. |
+| `GOOGLE_OAUTH_REDIRECT_URI` | Only if the callback is not at that path. Google matches it against the console entry exactly. |
+| `JOBSTAGER_PASSWORD_AUTH=0` | Turns off handle-and-password sign-in, leaving Google as the only way in. |
+
+Scopes are `openid email profile` -- all non-sensitive, so no Google verification review.
+Requesting Sheets access is a separate, later consent, and deliberately not bundled here:
+the `spreadsheets` scope *is* sensitive and would put the whole app behind a review.
+
+An account that signs in with Google has no password at all. If someone already has a
+password account, signing in with a Google address Google reports as **verified** links
+the two rather than creating a duplicate; an unverified address never does.

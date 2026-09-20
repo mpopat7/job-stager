@@ -19,7 +19,22 @@ from core.store.db import get_engine, init_db, metadata
 from core.store.migrate import import_legacy_registry
 from core.store.users import UserStore
 
-HEAD = "0002_registry_tables"
+
+def _head_revision() -> str:
+    """Read the latest revision from the migration scripts themselves.
+
+    Spelling it out as a constant meant every new migration failed this file until
+    someone remembered to bump it, which teaches the wrong reflex about a red test.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config()
+    config.set_main_option("script_location", str(db_mod.MIGRATIONS_DIR))
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
+HEAD = _head_revision()
 PG_URL = os.getenv("JOBSTAGER_TEST_DATABASE_URL")
 
 LEGACY_REGISTRY_SQL = """
