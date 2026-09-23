@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
-import re
 import secrets
 from typing import Dict, List, Optional
 from fastapi import (
@@ -17,10 +16,12 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from core.config.loader import load_profile, save_profile
 from core.config.schema import CandidateProfile, Preferences
+from core.store import files
 from core.store.profiles import ProfileStore
 from core.store.users import UserStore
 from web.auth import (
@@ -650,8 +651,8 @@ async def get_resumes_config(user_id: int = Depends(current_user)):
     all_cohorts = sorted(set(standard_cohorts + listable + active_years))
 
     for yr in all_cohorts:
-        resume_path = profile.resumes.resolve_resume(yr)
-        # resolve_resume() falls back to the default resume, so a path alone does not
+        resume_ref = profile.resumes.resume_ref(yr)
+        # resume_ref() falls back to the default resume, so a path alone does not
         # mean this year has one of its own.
         own = profile.resumes.variants.get(str(yr)) or (
             profile.resumes.grad_2028 if yr == 2028 else
@@ -660,8 +661,8 @@ async def get_resumes_config(user_id: int = Depends(current_user)):
         cohorts_data[str(yr)] = {
             "year": yr,
             "active": yr in active_years,
-            "configured": bool(own and Path(own).expanduser().exists()),
-            "path": str(resume_path) if resume_path else None,
+            "configured": files.available(own),
+            "path": resume_ref,
             "filename": Path(own).name if own else None,
         }
 
@@ -697,35 +698,34 @@ async def upload_resume(
     if not file.filename.lower().endswith((".pdf", ".doc", ".docx")):
         raise HTTPException(status_code=400, detail="Only PDF or Word documents allowed")
 
-    # A resume carries a full name, address and phone number, so one user's uploads
-    # never share a directory with another's.
-    upload_dir = (Path("resumes") / f"user_{user_id}").resolve()
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", file.filename)
-    dest_path = upload_dir / f"{grad_year}_{clean_name}"
-
     content = await file.read()
-    with open(dest_path, "wb") as f:
-        f.write(content)
+    try:
+        ref = await run_in_threadpool(files.save_resume, user_id, grad_year, file.filename, content)
+    except files.B2Error as err:
+        logger.error(f"Resume upload for user {user_id} failed: {err}")
+        raise HTTPException(status_code=502, detail="Could not store the resume. Try again.")
 
     profile = profile_for(user_id)
-    profile.resumes.variants[str(grad_year)] = str(dest_path)
+    previous = profile.resumes.variants.get(str(grad_year))
+    profile.resumes.variants[str(grad_year)] = ref
     if grad_year == 2028:
-        profile.resumes.grad_2028 = str(dest_path)
+        profile.resumes.grad_2028 = ref
     elif grad_year == 2029:
-        profile.resumes.grad_2029 = str(dest_path)
+        profile.resumes.grad_2029 = ref
 
     if grad_year not in profile.resumes.active_cohorts:
         profile.resumes.active_cohorts.append(grad_year)
         profile.resumes.active_cohorts.sort()
 
     profiles.save(user_id, profile)
+    if previous and previous != ref:
+        await run_in_threadpool(files.delete_resume, user_id, previous)
 
     return {
         "status": "uploaded",
         "grad_year": grad_year,
         "filename": file.filename,
-        "path": str(dest_path),
+        "path": ref,
     }
 
 

@@ -232,6 +232,34 @@
     <div id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" class="tab-panel hidden space-y-4">
       <section class="bg-[#121215] border border-[#27272a] rounded p-4 space-y-3">
         <div class="border-b border-[#27272a] pb-2">
+          <h2 class="text-sm font-bold text-white font-mono">Contact</h2>
+          <p class="text-[11px] text-[#71717a] font-mono">Your name and how employers reach you. Every application uses these.</p>
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">First name</span>
+            <input id="ct-first" autocomplete="given-name" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" /></label>
+          <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Last name</span>
+            <input id="ct-last" autocomplete="family-name" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" /></label>
+          <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Preferred name</span>
+            <input id="ct-preferred" autocomplete="nickname" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" /></label>
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Email</span>
+            <input id="ct-email" type="email" autocomplete="email" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" /></label>
+          <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Phone</span>
+            <input id="ct-phone" type="tel" autocomplete="tel" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" /></label>
+          <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Location</span>
+            <input id="ct-location" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="Bloomington, IN" /></label>
+        </div>
+        <div class="pt-3 border-t border-[#27272a] flex items-center justify-between gap-3">
+          <span class="text-[11px] text-[#71717a] font-mono" id="contact-status">Blank fields get flagged, not guessed.</span>
+          <button onclick="saveContact()" id="save-contact-btn"
+            class="px-4 py-1.5 rounded text-xs font-medium text-black bg-emerald-500 hover:bg-emerald-400 cursor-pointer transition font-mono">Save Contact</button>
+        </div>
+      </section>
+
+      <section class="bg-[#121215] border border-[#27272a] rounded p-4 space-y-3">
+        <div class="border-b border-[#27272a] pb-2">
           <h2 class="text-sm font-bold text-white font-mono">Application Links</h2>
           <p class="text-[11px] text-[#a1a1aa] font-mono">Named fields use their matching link. For a general Website field, JobStager tries these from top to bottom. Only checked graduation years receive each link.</p>
         </div>
@@ -919,6 +947,7 @@
         const profile = (await profileRes.json()).profile;
         const cohorts = await cohortsRes.json();
         linksCandidateCache = profile.candidate;
+        fillContact(linksCandidateCache);
         linkYears = (cohorts.active_cohorts?.length
           ? cohorts.active_cohorts : [cohorts.default_cohort]).map(Number).sort((a, b) => a - b);
 
@@ -1016,6 +1045,51 @@
         if (!res.ok) { status.textContent = data.detail || 'Save failed.'; return; }
         linksCandidateCache = { ...linksCandidateCache, links };
         status.textContent = 'Saved. New applications use these link rules.';
+      } catch (err) {
+        status.textContent = 'Save failed.';
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    // ---- Contact -----------------------------------------------------------
+    // Contact and links are both halves of `candidate`, so each save sends the other
+    // half from the shared cache rather than wiping it.
+    function fillContact(candidate) {
+      setVal('ct-first', candidate.first_name);
+      setVal('ct-last', candidate.last_name);
+      setVal('ct-preferred', candidate.preferred_name);
+      setVal('ct-email', candidate.email);
+      setVal('ct-phone', candidate.phone);
+      setVal('ct-location', candidate.location);
+      document.getElementById('contact-status').textContent =
+        candidate.first_name && candidate.email ? 'Loaded.' : 'Add your name and email before staging an application.';
+    }
+
+    async function saveContact() {
+      const status = document.getElementById('contact-status');
+      if (!linksCandidateCache) { status.textContent = 'Contact is still loading.'; return; }
+      const candidate = {
+        ...linksCandidateCache,
+        first_name: getVal('ct-first') || '',
+        last_name: getVal('ct-last') || '',
+        preferred_name: getVal('ct-preferred'),
+        email: getVal('ct-email') || '',
+        phone: getVal('ct-phone') || '',
+        location: getVal('ct-location') || '',
+      };
+      const button = document.getElementById('save-contact-btn');
+      button.disabled = true;
+      status.textContent = 'Saving...';
+      try {
+        const res = await fetch('/api/profile', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ candidate }),
+        });
+        const data = await res.json();
+        if (!res.ok) { status.textContent = data.detail || 'Save failed.'; return; }
+        linksCandidateCache = candidate;
+        status.textContent = 'Saved.';
       } catch (err) {
         status.textContent = 'Save failed.';
       } finally {

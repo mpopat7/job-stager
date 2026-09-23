@@ -25,6 +25,9 @@ JobStager is a local automation agent that pre-fills ATS application forms (Gree
   this returns what to put in each one. Nothing in it touches a browser.
 - `core/store/db.py`: SQLAlchemy schema for both installs. `DATABASE_URL` unset means the
   local SQLite file; a deployment points it at Postgres and nothing else changes.
+- `core/store/files.py`: Resume storage. Local disk by default; `B2_KEY_ID`/`B2_APPLICATION_KEY`/
+  `B2_BUCKET_NAME` send new uploads to a private B2 bucket and the profile stores a `b2://` ref.
+  `ResumesConfig.resume_ref()` picks the reference; `resolve_resume()` turns it into a local file.
 - `core/store/crypto.py`: Encrypts EEO self-identification at rest (`JOBSTAGER_SECRET_KEY`).
 - `web/oauth_google.py`: Sign in with Google — scopes `openid email profile` only, all
   non-sensitive. Identities are keyed on the Google subject, never the email, because an
@@ -60,8 +63,9 @@ A personal install uses a handle and password and needs no configuration. A shar
 deployment sets `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET` and `JOBSTAGER_PASSWORD_AUTH=0` to run
 Google-only, which is what removes the need for an email service: nothing to verify and no
 password to reset. An account created through Google has no password at all, so
-`UserStore.verify` refuses a null hash on the same branch as a missing handle. See the
-README for the full variable table.
+`UserStore.verify` refuses a null hash on the same branch as a missing handle. See
+`docs/deploying.md` for the full variable table. The README is written for users only —
+operator setup goes in `docs/`.
 
 ## Personal install vs shared deployment
 `JOBSTAGER_MULTI_TENANT=1` says strangers share this process. It turns off three things that

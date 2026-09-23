@@ -221,7 +221,13 @@ class ResumesConfig(BaseModel):
         return sorted(list(years)) if years else [2028, 2029]
 
     def resolve_resume(self, grad_year: Optional[int] = None) -> Optional[Path]:
-        """Resolves the appropriate resume PDF path."""
+        """A local file holding the resume for this cohort, fetched first if it is stored remotely."""
+        from core.store import files
+
+        return files.local_copy(self.resume_ref(grad_year))
+
+    def resume_ref(self, grad_year: Optional[int] = None) -> Optional[str]:
+        """The stored reference -- a path, or a `b2://` key -- for this cohort's resume."""
         target = None
         if grad_year:
             year_str = str(grad_year)
@@ -243,11 +249,7 @@ class ResumesConfig(BaseModel):
             if not target and self.variants:
                 target = next(iter(self.variants.values()))
 
-        if target:
-            path = Path(target).expanduser().resolve()
-            if path.exists():
-                return path
-        return None
+        return target or None
 
 
 class ExperienceHighlight(BaseModel):

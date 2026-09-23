@@ -14,15 +14,18 @@ back as one exact option string the extension can match without guessing.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from core.config.grad_detector import detect_grad_year
 from core.solver.questions import Kind, QKey
 from core.solver.resolver import AnswerResolver, pick_option
+from core.store import files
 from web.auth import current_user, profile_for
 
 logger = logging.getLogger(__name__)
@@ -168,10 +171,20 @@ def _cohort_for(profile, req: ResolveRequest) -> int:
 async def get_resume(grad_year: Optional[int] = None, user_id: int = Depends(current_user)):
     """The resume matching a graduation cohort, for the extension to attach."""
     profile = profile_for(user_id)
-    path = profile.resumes.resolve_resume(grad_year)
-    if path is None or not path.exists():
+    ref = profile.resumes.resume_ref(grad_year)
+    if not files.available(ref):
         raise HTTPException(status_code=404, detail="No resume on file for that cohort.")
-    return FileResponse(path, media_type="application/pdf", filename=path.name)
+    name = files.clean_filename(Path(ref).name)
+    try:
+        data = await run_in_threadpool(files.read_resume, ref)
+    except (OSError, files.B2Error) as err:
+        logger.error(f"Resume for user {user_id} unreadable: {err}")
+        raise HTTPException(status_code=404, detail="No resume on file for that cohort.")
+    return Response(
+        data,
+        media_type=files.content_type(name),
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 @router.get("/me")

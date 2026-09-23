@@ -17,7 +17,7 @@ from fastapi import Cookie, Depends, Header, HTTPException, Request, Response
 
 from core.config.loader import load_profile
 from core.config.schema import CandidateProfile
-from core.store import crypto
+from core.store import crypto, files
 from core.store.profiles import ProfileStore
 from core.store.users import UserStore
 from web import oauth_google
@@ -198,6 +198,11 @@ def check_deployment_config() -> None:
     if not password_auth_enabled() and not oauth_google.configured():
         missing.append(
             "GOOGLE_OAUTH_CLIENT_ID/SECRET (password sign-in is off, so nobody could sign in)"
+        )
+    if not files.b2_configured():
+        missing.append(
+            "B2_KEY_ID/B2_APPLICATION_KEY/B2_BUCKET_NAME (resumes would be written to a disk "
+            "that a restart wipes)"
         )
     if missing:
         raise RuntimeError(
