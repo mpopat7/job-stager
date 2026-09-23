@@ -61,3 +61,12 @@ Mirroring applications to a Google Sheet currently uses a service-account key at
 `~/.config/gcp/sheets-bot.json` and the sheet id in `JOBSTAGER_SPREADSHEET_ID` (or
 `tracker.spreadsheet_id` in `profile.yaml`). Share the sheet with the service account's
 address. Without these, the in-app Tracker works on its own.
+
+## Scheduled crawl
+
+`.github/workflows/crawl.yml` refreshes the job registry every six hours by running
+`python3 -m cli.crawl` against the `DATABASE_URL` repository secret, the same Postgres the
+server uses. It writes only public posting metadata. Run it by hand from the Actions tab
+with **Run workflow**. GitHub pauses a schedule after 60 days without a commit to the
+repository; re-enable it from the same tab.
+

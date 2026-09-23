@@ -1,0 +1,36 @@
+# Refreshes the shared job registry on a schedule. It writes only public posting metadata,
+# into the database named by the DATABASE_URL repository secret (the deployment's Postgres).
+# GitHub pauses scheduled workflows after 60 days without a commit to the repo; re-enable
+# it from the Actions tab if that happens.
+name: Crawl job boards
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"  # every six hours, off the top of the hour when Actions is busiest
+  workflow_dispatch:
+
+concurrency:
+  group: crawl
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Require the database secret
+        if: env.DATABASE_URL == ''
+        run: |
+          echo "::error::Set the DATABASE_URL repository secret to the deployment's Postgres URL."
+          exit 1
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Crawl
+        run: uv run --frozen python3 -m cli.crawl
