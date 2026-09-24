@@ -60,6 +60,8 @@ async def test_resume_config_requires_a_session():
 @pytest.mark.asyncio
 async def test_api_resumes_endpoints(tmp_path, monkeypatch):
     monkeypatch.setattr("core.store.db.DEFAULT_DB_PATH", tmp_path / "web.db")
+    # Uploads land under LOCAL_ROOT, which is the real resumes/ folder unless moved.
+    monkeypatch.setattr("core.store.files.LOCAL_ROOT", tmp_path / "resumes")
     import web.auth as auth
     from core.store.profiles import ProfileStore
     from core.store.users import UserStore
