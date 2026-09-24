@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import timedelta
+
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
@@ -26,7 +29,8 @@ from core.config.grad_detector import detect_grad_year
 from core.solver.questions import Kind, QKey
 from core.solver.resolver import AnswerResolver, pick_option
 from core.store import files
-from web.auth import current_user, profile_for
+from web import auth
+from web.auth import BEARER_PREFIX, SESSION_COOKIE, current_user, profile_for
 
 logger = logging.getLogger(__name__)
 
@@ -197,3 +201,40 @@ async def whoami(user_id: int = Depends(current_user)):
         "cohorts": profile.resumes.get_available_years(),
         "default_cohort": profile.education.graduation_year,
     }
+
+
+# An extension token outlives a dashboard session because re-connecting means opening a
+# tab and clicking through; it is still revocable on its own from the extension.
+EXTENSION_TOKEN_TTL = timedelta(days=90)
+
+
+@router.post("/connect")
+async def connect_extension(
+    request: Request,
+    jobstager_session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
+):
+    """Mint a token for the extension, from the dashboard's own signed-in session.
+
+    Only the session cookie counts here: a bearer token must not be able to mint more
+    of itself. The cookie is `lax`, so a cross-site POST never carries it, and the
+    Origin check refuses a same-site page that is not this server.
+    """
+    # Hosts, not full origins: behind Render's proxy the server sees itself as http://.
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).netloc != request.headers.get("host", ""):
+        raise HTTPException(status_code=403, detail="Connect from JobStager itself.")
+    user_id = auth.users.user_for_session(jobstager_session)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Sign in to JobStager first.")
+    token = auth.users.start_session(user_id, ttl=EXTENSION_TOKEN_TTL)
+    return {"token": token, "expires_in_days": EXTENSION_TOKEN_TTL.days}
+
+
+@router.delete("/token")
+async def disconnect_extension(authorization: Optional[str] = Header(default=None)):
+    """End the extension's own token, leaving every dashboard session alone."""
+    if authorization and authorization.lower().startswith(BEARER_PREFIX):
+        token = authorization[len(BEARER_PREFIX):].strip()
+        if token:
+            auth.users.end_session(token)
+    return {"status": "disconnected"}

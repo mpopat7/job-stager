@@ -293,3 +293,32 @@ async def test_a_shared_deployment_refuses_to_open_a_browser(isolated, monkeypat
             "url": "https://job-boards.greenhouse.io/acme/jobs/1"
         })
         assert res.status_code == 501
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_session_mints_a_separate_extension_token(isolated):
+    async with _client() as client:
+        await _register(client)
+        dashboard = client.cookies.get("jobstager_session")
+        res = await client.post("/v1/connect", headers={"Origin": "http://test"})
+        assert res.status_code == 200
+        token = res.json()["token"]
+        assert token and token != dashboard
+
+    async with _client() as bare:
+        auth_header = {"Authorization": f"Bearer {token}"}
+        assert (await bare.get("/v1/me", headers=auth_header)).status_code == 200
+        # A bearer token cannot mint more of itself: only the dashboard cookie can.
+        assert (await bare.post("/v1/connect", headers=auth_header)).status_code == 401
+        # Disconnecting ends the extension's token and nothing else.
+        assert (await bare.delete("/v1/token", headers=auth_header)).status_code == 200
+        assert (await bare.get("/v1/me", headers=auth_header)).status_code == 401
+    assert isolated.users.user_for_session(dashboard) is not None
+
+
+@pytest.mark.asyncio
+async def test_connect_refuses_another_site(isolated):
+    async with _client() as client:
+        await _register(client)
+        res = await client.post("/v1/connect", headers={"Origin": "https://evil.example"})
+        assert res.status_code == 403

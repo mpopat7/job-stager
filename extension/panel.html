@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>JobStager</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <header>
+    <strong>JobStager</strong>
+    <span id="who"></span>
+  </header>
+
+  <p id="notice" role="status"></p>
+
+  <section id="signed-out" hidden>
+    <p>Connect the extension to your JobStager account. A tab opens; click <em>Connect</em> there.</p>
+    <button id="connect" class="primary">Connect to JobStager</button>
+    <details>
+      <summary>Server</summary>
+      <form id="server-form">
+        <input id="server" type="url" spellcheck="false" />
+        <button type="submit">Use this server</button>
+      </form>
+    </details>
+  </section>
+
+  <section id="signed-in" hidden>
+    <div class="row">
+      <label>Resume
+        <select id="cohort"><option value="">Match the posting</option></select>
+      </label>
+      <button id="scan" class="primary">Scan this page</button>
+    </div>
+    <p id="summary"></p>
+    <ol id="fields"></ol>
+    <footer><button id="disconnect" class="link">Disconnect</button></footer>
+  </section>
+
+  <script src="panel.js"></script>
+</body>
+</html>

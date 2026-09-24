@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Connect the extension · JobStager</title>
+  <style>
+    :root { --bg: #09090b; --panel: #121215; --line: #27272a; --text: #f4f4f5; --muted: #a1a1aa; --ok: #10b981; --bad: #f87171; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+           background: var(--bg); color: var(--text);
+           font: 13px/1.5 ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; }
+    main { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--line);
+           border-radius: 4px; padding: 20px; }
+    h1 { font-size: 14px; margin: 0 0 6px; }
+    p { color: var(--muted); margin: 0 0 16px; }
+    button, a.btn { display: block; width: 100%; text-align: center; padding: 8px 12px; border-radius: 4px;
+           border: 0; background: var(--ok); color: #000; font: inherit; font-weight: 600; cursor: pointer;
+           text-decoration: none; }
+    button:disabled { opacity: .5; cursor: default; }
+    #status { margin: 12px 0 0; min-height: 1.5em; }
+    .ok { color: var(--ok); } .bad { color: var(--bad); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Connect the JobStager extension</h1>
+    <p id="lede">The extension fills application forms from your profile. Connecting gives it
+      its own key to this account; you can disconnect it from the extension at any time.</p>
+    <button id="connect" hidden>Connect extension</button>
+    <a id="signin" class="btn" href="/" hidden>Sign in first</a>
+    <p id="status" role="status"></p>
+  </main>
+  <script>
+    // The token never touches the URL or storage here: it goes from the response straight
+    // to the extension's script on this page, which answers once it has saved it.
+    const status = document.getElementById('status');
+    const button = document.getElementById('connect');
+    let handedOver = false;
+
+    function say(text, cls) { status.textContent = text; status.className = cls || ''; }
+
+    window.addEventListener('message', (event) => {
+      if (event.source !== window || event.origin !== location.origin) return;
+      if (event.data?.type === 'jobstager-extension-connected') {
+        handedOver = true;
+        button.hidden = true;
+        say('Connected. You can close this tab and go back to the posting.', 'ok');
+      }
+    });
+
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      say('Connecting...');
+      try {
+        const res = await fetch('/v1/connect', { method: 'POST', credentials: 'same-origin' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Could not connect.');
+        window.postMessage({ type: 'jobstager-extension-token', token: data.token }, location.origin);
+        setTimeout(() => {
+          if (!handedOver) {
+            say('The extension did not answer. Make sure it is installed, reload this page, and try again.', 'bad');
+            button.disabled = false;
+          }
+        }, 3000);
+      } catch (err) {
+        say(err.message, 'bad');
+        button.disabled = false;
+      }
+    });
+
+    fetch('/api/auth/status').then((r) => r.json()).then((st) => {
+      if (st.signed_in) button.hidden = false;
+      else {
+        document.getElementById('signin').hidden = false;
+        say('Sign in to JobStager, then come back to this page.');
+      }
+    }).catch(() => say('JobStager is not answering. Try again in a minute.', 'bad'));
+  </script>
+</body>
+</html>

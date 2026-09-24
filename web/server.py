@@ -742,5 +742,11 @@ async def serve_index():
     return HTMLResponse("<h1>JobStager UI</h1><p>Static index.html not found.</p>")
 
 
+@app.get("/connect-extension", response_class=HTMLResponse)
+async def serve_connect_extension():
+    """Where the extension sends someone to hand it a token for their account."""
+    return FileResponse(STATIC_DIR / "connect.html")
+
+
 # Mount static assets
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

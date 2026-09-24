@@ -108,11 +108,11 @@ class UserStore:
             return None
         return int(row.id)
 
-    def start_session(self, user_id: int) -> str:
+    def start_session(self, user_id: int, ttl: timedelta = SESSION_TTL) -> str:
         token = secrets.token_urlsafe(32)
         with self.engine.begin() as conn:
             conn.execute(insert(sessions_table).values(
-                token=token, user_id=user_id, created_at=_now(), expires_at=_now() + SESSION_TTL
+                token=token, user_id=user_id, created_at=_now(), expires_at=_now() + ttl
             ))
         return token
 

@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "JobStager",
+  "version": "0.1.0",
+  "description": "Fills job application forms from your JobStager profile, then stops for you to review and submit.",
+  "permissions": ["storage", "sidePanel", "activeTab", "scripting", "tabs"],
+  "host_permissions": [
+    "https://jobstager.onrender.com/*",
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "https://boards.greenhouse.io/*",
+    "https://job-boards.greenhouse.io/*",
+    "https://jobs.lever.co/*",
+    "https://jobs.ashbyhq.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "panel.html" },
+  "action": { "default_title": "JobStager" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://jobstager.onrender.com/connect-extension*",
+        "http://127.0.0.1:8000/connect-extension*",
+        "http://localhost:8000/connect-extension*"
+      ],
+      "js": ["connect.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

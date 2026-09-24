@@ -61,7 +61,6 @@ Then open <http://localhost:8000> and create an account. On a Mac you can double
 
 ## Coming soon
 
-- **Sign in with Google.** One click, no password.
 - **A Chrome extension.** You'll fill forms directly in your normal browser, with nothing to
   install on your computer beyond the extension.
 - **Written answers.** Drafts for free-response questions, generated only from facts in your
