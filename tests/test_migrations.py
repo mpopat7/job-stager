@@ -4,6 +4,7 @@ The Postgres case runs only when JOBSTAGER_TEST_DATABASE_URL names a disposable 
 it drops every table in it first.
 """
 
+import json
 import os
 import sqlite3
 
@@ -205,3 +206,64 @@ def test_the_whole_schema_on_postgres():
     users = UserStore(PG_URL)
     users.create_user("pguser", "pg-password-long-enough")
     assert users.count_users() == 1
+
+
+def _upgrade_to(db, revision: str) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config()
+    config.set_main_option("script_location", str(db_mod.MIGRATIONS_DIR))
+    with get_engine(db).begin() as conn:
+        config.attributes["connection"] = conn
+        command.upgrade(config, revision)
+
+
+def test_workday_boards_filed_under_job_are_split_into_their_real_portals(tmp_path):
+    """The old resolver took the literal `job` as the portal for any locale-less URL.
+
+    One fake board collected jobs from two real portals; the repair files each job under
+    the portal its URL names, keeps a user's match pointing at the same posting, and
+    drops the fake board.
+    """
+    db = tmp_path / "workday.db"
+    _upgrade_to(db, "0004_stamped_users_columns")
+    host = "tencent.wd1.myworkdayjobs.com"
+    bad = f"{host}/tencent/job"
+    with get_engine(db).begin() as conn:
+        conn.execute(text(
+            "INSERT INTO users (id, handle, password_hash, password_salt, email_verified)"
+            " VALUES (1, 'u', 'h', 's', 0)"
+        ))
+        conn.execute(text(
+            "INSERT INTO companies (name, slug, provider, board_url, verified, active, job_count)"
+            " VALUES ('Tencent', :slug, 'workday', :url, 1, 1, 0)"
+        ), {"slug": bad, "url": f"https://{bad}"})
+        for job_id, portal in (("a", "Tencent_Careers"), ("b", "OA_Huoshui_Platform")):
+            conn.execute(text(
+                "INSERT INTO jobs (id, company, company_slug, provider, title, url, is_internship)"
+                " VALUES (:id, 'Tencent', :slug, 'workday', 'Intern', :url, 1)"
+            ), {"id": f"workday:{bad}:{job_id}", "slug": bad,
+                "url": f"https://{host}/{portal}/job/UK-London/NLP-Research-Intern_R1"})
+        conn.execute(text(
+            "INSERT INTO job_matches (user_id, job_id, candidate_job_ids, origin, status,"
+            " matched_by, source_key, company, role)"
+            " VALUES (1, :job, :candidates, 'sheet', 'confirmed', 'url', 'k', 'Tencent', 'Intern')"
+        ), {"job": f"workday:{bad}:a", "candidates": json.dumps([f"workday:{bad}:b"])})
+
+    init_db(db)
+
+    careers = f"{host}/tencent/Tencent_Careers"
+    platform = f"{host}/tencent/OA_Huoshui_Platform"
+    with get_engine(db).connect() as conn:
+        slugs = set(conn.execute(text(
+            "SELECT slug FROM companies WHERE provider = 'workday'")).scalars())
+        assert slugs == {careers, platform}
+        assert set(conn.execute(text("SELECT id FROM jobs")).scalars()) == {
+            f"workday:{careers}:a", f"workday:{platform}:b"}
+        match = conn.execute(text("SELECT job_id, candidate_job_ids FROM job_matches")).one()
+        assert match.job_id == f"workday:{careers}:a"
+        assert json.loads(match.candidate_job_ids) == [f"workday:{platform}:b"]
+        board_url = conn.execute(text(
+            "SELECT board_url FROM companies WHERE slug = :s"), {"s": careers}).scalar_one()
+        assert board_url == f"https://{host}/Tencent_Careers"

@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from core.scrapers.base import ATSProvider, CompanyBoard
+from core.scrapers.workday import WorkdayScraper
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +48,6 @@ URL_PATTERNS = [
         ATSProvider.ASHBY,
         re.compile(r"jobs\.ashbyhq\.com/([a-zA-Z0-9_\-]+)"),
     ),
-    # Workday
-    (
-        ATSProvider.WORKDAY,
-        re.compile(r"https?://([a-zA-Z0-9_\-]+\.wd[0-9]+\.myworkdayjobs\.com)/[^/]+/([^/]+)/job/[^/]+/([^/?#]+)"),
-    ),
-    (
-        ATSProvider.WORKDAY,
-        re.compile(r"https?://([a-zA-Z0-9_\-]+\.wd[0-9]+\.myworkdayjobs\.com)/[^/]+/([^/?#]+)"),
-    ),
 ]
 
 
@@ -85,6 +77,17 @@ def resolve_url(url: str) -> Tuple[ATSProvider, str, Optional[str]]:
         if slug:
             return ATSProvider.GREENHOUSE, slug, job_id
 
+    # Workday has one parser, shared with the scraper, so a board registered from a posting
+    # URL is the same board the scraper later requests.
+    if parsed.netloc.lower().endswith(".myworkdayjobs.com"):
+        workday = WorkdayScraper.parse_workday_url(cleaned_url)
+        if not workday:
+            return ATSProvider.UNKNOWN, "", None
+        slug = f"{workday['host']}/{workday['tenant']}/{workday['portal']}"
+        job_path = workday["job_path"].rstrip("/")
+        job_id = job_path.rsplit("/", 1)[-1] if job_path.count("/") >= 2 else None
+        return ATSProvider.WORKDAY, slug, job_id
+
     for provider, pattern in URL_PATTERNS:
         match = pattern.search(cleaned_url)
         if not match:
@@ -109,14 +112,6 @@ def resolve_url(url: str) -> Tuple[ATSProvider, str, Optional[str]]:
                 return provider, groups[0], groups[1]
             return provider, groups[0], None
 
-        elif provider == ATSProvider.WORKDAY:
-            # groups: host, portal, [job_title_req]
-            host = groups[0]
-            tenant = host.split(".")[0]
-            portal = groups[1]
-            job_id = groups[2] if len(groups) > 2 else None
-            slug = f"{host}/{tenant}/{portal}"
-            return provider, slug, job_id
 
     # Check for custom domain Greenhouse if data-gh-job-id or iframe
     return ATSProvider.UNKNOWN, "", None

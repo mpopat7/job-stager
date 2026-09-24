@@ -6,7 +6,6 @@ from datetime import datetime
 import logging
 import re
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlparse
 import httpx
 
 from core.registry.store import CompanyRegistry
@@ -74,14 +73,9 @@ async def ingest_simplify_feed(
             # Resolve ATS Provider and Slug
             provider, slug, job_id = resolve_url(url)
             if provider == ATSProvider.UNKNOWN:
-                # Check for workday host
-                if "myworkdayjobs.com" in url:
-                    provider = ATSProvider.WORKDAY
-                    parsed = urlparse(url)
-                    slug = parsed.netloc
-                    job_id = url.split("/")[-1]
-                else:
-                    continue
+                # Includes Workday URLs that name no portal: a host-only slug is a board
+                # the scanner can never request.
+                continue
 
             # Board record
             board_key = f"{provider.value}:{slug}"
@@ -94,7 +88,8 @@ async def ingest_simplify_feed(
                 elif provider == ATSProvider.ASHBY:
                     board_url = f"https://jobs.ashbyhq.com/{slug}"
                 elif provider == ATSProvider.WORKDAY:
-                    board_url = f"https://{slug}"
+                    host, _tenant, portal = slug.split("/")
+                    board_url = f"https://{host}/{portal}"
 
                 companies_to_add[board_key] = CompanyBoard(
                     company_name=company_name,

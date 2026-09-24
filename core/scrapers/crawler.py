@@ -41,7 +41,7 @@ class AsyncBoardCrawler:
                 ATSProvider.GREENHOUSE: GreenhouseScraper(client),
                 ATSProvider.LEVER: LeverScraper(client),
                 ATSProvider.ASHBY: AshbyScraper(client),
-                ATSProvider.WORKDAY: WorkdayScraper(client),
+                ATSProvider.WORKDAY: WorkdayScraper(client, search_text="intern" if internships_only else ""),
             }
 
             scraper = scraper_map.get(board.provider)

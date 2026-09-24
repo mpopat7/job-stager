@@ -48,3 +48,28 @@ def test_resolve_workday():
 def test_generate_slug_candidates():
     candidates = generate_slug_candidates("Ramp Financial Inc.")
     assert "ramp-financial" in candidates or "ramp" in candidates
+
+
+def test_resolve_workday_without_a_locale_takes_the_portal_not_job():
+    # The feed's usual shape. The old pattern read `UR_External` as a locale and `job` as
+    # the portal, registering a board that 404s.
+    url = "https://equifax.wd5.myworkdayjobs.com/UR_External/job/USA-Alpharetta/Data-Intern_J00171081"
+    provider, slug, job_id = resolve_url(url)
+    assert provider == ATSProvider.WORKDAY
+    assert slug == "equifax.wd5.myworkdayjobs.com/equifax/UR_External"
+    assert job_id == "Data-Intern_J00171081"
+
+
+def test_resolve_workday_board_page_and_hyphenated_portal():
+    provider, slug, job_id = resolve_url("https://acme.wd1.myworkdayjobs.com/en-US/Acme-External")
+    assert slug == "acme.wd1.myworkdayjobs.com/acme/Acme-External"
+    assert job_id is None
+    # A hyphen alone is not a locale.
+    _, slug, _ = resolve_url("https://acme.wd1.myworkdayjobs.com/Acme-External/job/X/Intern_1")
+    assert slug == "acme.wd1.myworkdayjobs.com/acme/Acme-External"
+
+
+def test_resolve_workday_url_with_no_portal_is_unknown():
+    provider, slug, _ = resolve_url("https://acme.wd1.myworkdayjobs.com/en-US/job/X/Intern_1")
+    assert provider == ATSProvider.UNKNOWN
+    assert slug == ""

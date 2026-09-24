@@ -1,5 +1,7 @@
 """Tests for ATS scrapers with mocked HTTP responses."""
 
+import json
+
 import pytest
 import httpx
 from core.scrapers.base import ATSProvider
@@ -98,3 +100,35 @@ async def test_ashby_scraper_parsing():
     assert jobs[0].title == "Machine Learning Intern"
     assert jobs[0].provider == ATSProvider.ASHBY
     assert jobs[0].is_internship is True
+
+
+@pytest.mark.asyncio
+async def test_workday_scraper_pages_within_the_limit_cxs_accepts():
+    """CXS answers 400 to `limit` over 20 and reports `total` on the first page only."""
+    total = 45
+    seen = []
+
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        seen.append(body)
+        if body["limit"] > 20:
+            return httpx.Response(400)
+        start = body["offset"]
+        batch = [
+            {"title": f"Software Intern {i}", "externalPath": f"/job/US-CA/Software-Intern_R{i}",
+             "locationsText": "US-CA", "bulletFields": [f"R{i}"]}
+            for i in range(start, min(start + body["limit"], total))
+        ]
+        return httpx.Response(200, json={"total": total if start == 0 else 0, "jobPostings": batch})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        scraper = WorkdayScraper(client=client, search_text="intern")
+        jobs = await scraper.fetch_jobs("acme.wd1.myworkdayjobs.com/acme/External")
+
+    assert len(jobs) == total
+    assert [b["offset"] for b in seen] == [0, 20, 40]
+    assert all(b["searchText"] == "intern" for b in seen)
+    assert jobs[0].url == (
+        "https://acme.wd1.myworkdayjobs.com/External/job/US-CA/Software-Intern_R0")
+    assert jobs[0].company_slug == "acme.wd1.myworkdayjobs.com/acme/External"
