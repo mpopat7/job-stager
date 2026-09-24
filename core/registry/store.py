@@ -122,8 +122,11 @@ class CompanyRegistry:
     def upsert_jobs(self, jobs: List[JobPosting]) -> int:
         """Insert or update discovered jobs, returns count of new jobs inserted."""
         rows = {}
+        by_url: dict[str, str] = {}
         for job in jobs:
             key = f"{job.provider.value}:{job.company_slug}:{job.id}"
+            # One posting reached from two sources in one batch keeps the first key.
+            key = by_url.setdefault(job.url, key)
             rows[key] = {
                 "id": key,
                 "company": job.company,
@@ -139,9 +142,23 @@ class CompanyRegistry:
         if not rows:
             return 0
 
-        keys = list(rows)
         stmt = upsert(self.engine, jobs_table, None, ("id",), _REFRESHED_JOB_COLUMNS)
         with self.engine.begin() as conn:
+            # The feed and a board scan give one posting different ids -- Workday's feed id
+            # is a UUID, its scan id the requisition number -- but the same URL. The row
+            # already stored keeps its id, so the Jobs list does not show the posting twice.
+            urls = list(by_url)
+            for i in range(0, len(urls), 500):
+                for stored_id, url in conn.execute(
+                    select(jobs_table.c.id, jobs_table.c.url)
+                    .where(jobs_table.c.url.in_(urls[i:i + 500]))
+                ):
+                    key = by_url[url]
+                    if key != stored_id and key in rows:
+                        rows[stored_id] = {**rows.pop(key), "id": stored_id}
+                        by_url[url] = stored_id
+
+            keys = list(rows)
             existing: set[str] = set()
             # Chunked so a large feed stays under both databases' bound-parameter limits.
             for i in range(0, len(keys), 500):

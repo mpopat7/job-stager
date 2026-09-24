@@ -104,3 +104,22 @@ def test_reconcile_with_tracker(tmp_path):
     assert stripe_job.status == "applied"
     assert stripe_job.stage == "OA Completed"
     assert stripe_job.applied_date == "2026-09-01"
+
+
+def test_a_posting_found_by_feed_and_scan_is_stored_once(tmp_path):
+    """The feed names a Workday posting by UUID, a board scan by requisition number."""
+    registry = CompanyRegistry(db_path=tmp_path / "dedupe.db")
+    url = "https://acme.wd1.myworkdayjobs.com/External/job/US-CA/Software-Intern_R1"
+    slug = "acme.wd1.myworkdayjobs.com/acme/External"
+
+    def posting(job_id, title):
+        return JobPosting(id=job_id, title=title, company="Acme", company_slug=slug,
+                          location="US-CA", url=url, apply_url=url,
+                          provider=ATSProvider.WORKDAY, is_internship=True)
+
+    assert registry.upsert_jobs([posting("3b7e5b89-uuid", "Software Intern")]) == 1
+    assert registry.upsert_jobs([posting("R1", "Software Intern (Summer 2027)")]) == 0
+    assert registry.count_jobs() == 1
+    job = registry.find_job(url=url)
+    assert job["id"] == f"workday:{slug}:3b7e5b89-uuid"
+    assert job["title"] == "Software Intern (Summer 2027)"
