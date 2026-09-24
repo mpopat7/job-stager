@@ -35,7 +35,10 @@ person's laptop: falling back to `profile.yaml`, seeding the first account from 
 and `/api/stage`, which opens a browser on the machine running the server. With it set, the
 server refuses to start without `JOBSTAGER_SECRET_KEY` (encrypts self-identification
 answers) and `JOBSTAGER_SECURE_COOKIES=1`. Set `JOBSTAGER_ALLOWED_ORIGINS` to the public
-address, and `JOBSTAGER_TRUST_PROXY=1` only when a proxy in front sets `X-Forwarded-For`.
+address. Rate limits key on the caller's IP, which behind a proxy has to come from a
+header the proxy writes: set `JOBSTAGER_CLIENT_IP_HEADER=True-Client-IP` on Render (it sits
+behind Cloudflare, which overwrites that header), or `JOBSTAGER_TRUST_PROXY=1` elsewhere to
+read the last `X-Forwarded-For` entry.
 
 `DATABASE_URL` points the server at Postgres. Leave it unset for the local SQLite file.
 

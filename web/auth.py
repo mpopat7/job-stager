@@ -159,14 +159,25 @@ def profile_for(user_id: Optional[int]) -> CandidateProfile:
 def client_ip(request: Request) -> str:
     """The caller's address, trusting a proxy header only when told to.
 
-    A deployment behind a load balancer sees the balancer's address on every request, so
-    `JOBSTAGER_TRUST_PROXY=1` says to read `X-Forwarded-For` instead. Trusting it by
-    default would let anyone reset their own rate limit with a header.
+    A deployment behind a load balancer sees the balancer's address on every request, so a
+    proxy header has to be read instead -- but only one the proxy writes. Trusting any
+    header by default would let anyone reset their own rate limit.
+
+    `JOBSTAGER_CLIENT_IP_HEADER` names a header the edge overwrites, such as Cloudflare's
+    `True-Client-IP` (Render sits behind Cloudflare). Failing that, `JOBSTAGER_TRUST_PROXY=1`
+    reads the *last* `X-Forwarded-For` entry: proxies append, so the first entry is
+    whatever the caller chose to send.
     """
+    header = os.getenv("JOBSTAGER_CLIENT_IP_HEADER", "").strip()
+    if header:
+        value = request.headers.get(header, "").strip()
+        if value:
+            return value
     if os.getenv("JOBSTAGER_TRUST_PROXY", "").strip() in ("1", "true", "yes"):
-        forwarded = request.headers.get("x-forwarded-for", "")
+        forwarded = [a.strip() for a in request.headers.get("x-forwarded-for", "").split(",")]
+        forwarded = [a for a in forwarded if a]
         if forwarded:
-            return forwarded.split(",")[0].strip()
+            return forwarded[-1]
     return request.client.host if request.client else "unknown"
 
 

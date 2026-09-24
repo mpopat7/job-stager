@@ -77,3 +77,19 @@ def test_a_user_cannot_read_another_users_profile(client):
     client.post("/api/auth/logout")
     client.post("/api/auth/register", json={"handle": "stranger", "password": "another-password"})
     assert client.get("/api/preferences").json()["pronouns"] is None
+
+
+def test_client_ip_ignores_what_the_caller_writes_into_forwarded_for(monkeypatch):
+    from starlette.requests import Request
+    from web.auth import client_ip
+
+    def request(headers):
+        return Request({"type": "http", "client": ("10.0.0.9", 1234),
+                        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()]})
+
+    spoofed = {"X-Forwarded-For": "1.2.3.4, 203.0.113.7", "True-Client-IP": "203.0.113.7"}
+    assert client_ip(request(spoofed)) == "10.0.0.9"
+    monkeypatch.setenv("JOBSTAGER_TRUST_PROXY", "1")
+    assert client_ip(request(spoofed)) == "203.0.113.7"
+    monkeypatch.setenv("JOBSTAGER_CLIENT_IP_HEADER", "True-Client-IP")
+    assert client_ip(request({"True-Client-IP": "198.51.100.2"})) == "198.51.100.2"

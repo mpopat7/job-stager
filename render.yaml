@@ -1,0 +1,37 @@
+# Render Blueprint for the shared deployment. Secrets are `sync: false`: Render asks for
+# each value once when the Blueprint is created and never reads them from this file.
+services:
+  - type: web
+    name: jobstager
+    runtime: docker
+    plan: free
+    region: ohio            # next to the Neon database (AWS us-east-2)
+    healthCheckPath: /api/auth/status
+    autoDeploy: true
+    envVars:
+      - key: JOBSTAGER_MULTI_TENANT
+        value: "1"
+      - key: JOBSTAGER_SECURE_COOKIES
+        value: "1"
+      - key: JOBSTAGER_PASSWORD_AUTH
+        value: "0"
+      - key: JOBSTAGER_CLIENT_IP_HEADER
+        value: True-Client-IP
+      - key: JOBSTAGER_PUBLIC_URL
+        sync: false
+      - key: JOBSTAGER_ALLOWED_ORIGINS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: JOBSTAGER_SECRET_KEY
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: B2_KEY_ID
+        sync: false
+      - key: B2_APPLICATION_KEY
+        sync: false
+      - key: B2_BUCKET_NAME
+        sync: false

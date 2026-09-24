@@ -1,0 +1,11 @@
+# Only what the Dockerfile copies matters, but a local build context would otherwise carry
+# personal data that git ignores: databases, profile.yaml, resumes.
+*
+!pyproject.toml
+!uv.lock
+!.python-version
+!alembic.ini
+!core
+!cli
+!web
+**/__pycache__
