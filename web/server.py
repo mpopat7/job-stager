@@ -369,9 +369,14 @@ async def list_jobs(
     sort: str = "recent",
     hide_applied: bool = True,
     limit: int = 50,
+    offset: int = 0,
     user_id: Optional[int] = Depends(optional_user),
 ):
-    """List public jobs with the caller's private application state layered on top."""
+    """List public jobs with the caller's private application state layered on top.
+
+    One page of the filtered registry, plus per-family counts over *all* of it, so the
+    role menu and the total describe the registry rather than the page on screen.
+    """
     reg = CompanyRegistry()
     states = MatchStore(user_id).job_states() if user_id else {}
     confirmed = {
@@ -385,29 +390,28 @@ async def list_jobs(
             pass
 
     keywords = q.split() if q else None
+    excluded = confirmed if hide_applied else None
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    counts = reg.count_jobs_by_role(keywords=keywords, provider=ats_enum, exclude_ids=excluded)
     jobs = reg.get_jobs(
         keywords=keywords,
         provider=ats_enum,
         limit=limit,
+        offset=offset,
         hide_applied=False,
-        exclude_ids=confirmed if hide_applied else None,
+        exclude_ids=excluded,
+        role=role,
+        sort=sort,
     )
-
-    # Classify before filtering so the counts describe the whole result set, not the
-    # slice left after the filter -- otherwise every tab reads zero except the active one.
-    counts = role_counts([j.title for j in jobs])
-    if role and role.lower() != "all":
-        jobs = [j for j in jobs if classify_role(j.title) == role]
-
-    if sort == "company":
-        jobs = sorted(jobs, key=lambda j: (j.company or "").lower())
-    elif sort == "title":
-        jobs = sorted(jobs, key=lambda j: (j.title or "").lower())
-    elif sort == "role":
-        jobs = sorted(jobs, key=lambda j: (classify_role(j.title), (j.company or "").lower()))
+    total = (
+        counts.get(role, 0) if role and role.lower() != "all" else sum(counts.values())
+    )
 
     return {
         "count": len(jobs),
+        "total": total,
+        "offset": offset,
         "role_counts": counts,
         "role_families": all_families(),
         "jobs": [

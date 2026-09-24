@@ -173,7 +173,11 @@ jobs_table = Table(
     Column("is_internship", Boolean, nullable=False, server_default=false()),
     Column("updated_at", String(40)),
     Column("discovered_at", DateTime(timezone=True), server_default=func.now()),
+    # Derived from the title by core/registry/roles.py, stored so the Jobs tab can filter
+    # and count by family in SQL instead of classifying every row per request.
+    Column("role_family", String(40)),
     Index("ix_jobs_url", "url"),
+    Index("ix_jobs_role_family", "role_family"),
 )
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"

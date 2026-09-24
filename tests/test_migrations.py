@@ -267,3 +267,33 @@ def test_workday_boards_filed_under_job_are_split_into_their_real_portals(tmp_pa
         board_url = conn.execute(text(
             "SELECT board_url FROM companies WHERE slug = :s"), {"s": careers}).scalar_one()
         assert board_url == f"https://{host}/Tencent_Careers"
+
+
+def test_stored_dates_become_sortable_and_jobs_gain_a_role_family(tmp_path):
+    db = tmp_path / "dates.db"
+    _upgrade_to(db, "0005_workday_board_slugs")
+    rows = [
+        ("workday:a", "Software Engineer Intern", "Posted 3 Days Ago"),
+        ("lever:b", "Finance Intern", "1788371280643"),
+        ("workday:c", "Marketing Intern", "Tempe, AZ"),
+        ("ashby:d", "Data Science Intern", "2026-09-01"),
+    ]
+    with get_engine(db).begin() as conn:
+        for job_id, title, posted in rows:
+            conn.execute(text(
+                "INSERT INTO jobs (id, company_slug, provider, title, url, is_internship,"
+                " updated_at, discovered_at) VALUES (:id, 's', 'x', :title, :id, 1, :posted,"
+                " '2026-09-24 06:00:00')"
+            ), {"id": job_id, "title": title, "posted": posted})
+
+    init_db(db)
+
+    with get_engine(db).connect() as conn:
+        got = dict((r[0], (r[1], r[2])) for r in conn.execute(
+            text("SELECT id, updated_at, role_family FROM jobs")))
+    assert got == {
+        "workday:a": ("2026-09-21", "Software Engineering"),
+        "lever:b": ("2026-09-02", "Finance"),
+        "workday:c": (None, "Other"),
+        "ashby:d": ("2026-09-01", "Data Science"),
+    }

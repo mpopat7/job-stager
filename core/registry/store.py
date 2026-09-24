@@ -13,17 +13,18 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from sqlalchemy import func, nulls_last, or_, select
+from sqlalchemy import bindparam, func, nulls_last, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
-from core.scrapers.base import ATSProvider, CompanyBoard, JobPosting
+from core.registry.roles import OTHER, classify_role
+from core.scrapers.base import ATSProvider, CompanyBoard, JobPosting, normalize_posted
 from core.scrapers.resolver import resolve_url
 from core.store.db import companies_table, get_engine, init_db, jobs_table, upsert
 
 logger = logging.getLogger(__name__)
 
 # What a re-scan may overwrite. The discovery time is kept from the first sighting.
-_REFRESHED_JOB_COLUMNS = ("company", "title", "location", "apply_url", "updated_at")
+_REFRESHED_JOB_COLUMNS = ("company", "title", "location", "apply_url", "updated_at", "role_family")
 
 
 def _board(row) -> CompanyBoard:
@@ -137,7 +138,8 @@ class CompanyRegistry:
                 "url": job.url,
                 "apply_url": job.apply_url,
                 "is_internship": job.is_internship,
-                "updated_at": job.updated_at,
+                "updated_at": normalize_posted(job.updated_at),
+                "role_family": classify_role(job.title),
             }
         if not rows:
             return 0
@@ -168,6 +170,28 @@ class CompanyRegistry:
                 )
             conn.execute(stmt, list(rows.values()))
         return len(rows.keys() - existing)
+
+    def reclassify_roles(self) -> int:
+        """Bring every stored role family in line with the current classifier.
+
+        Only rows whose family changed are written, so after a classifier edit this
+        touches the affected rows and otherwise touches none. Returns rows changed.
+        """
+        j = jobs_table.c
+        with self.engine.begin() as conn:
+            changed = [
+                {"row_id": row_id, "family": family}
+                for row_id, title, stored in conn.execute(select(j.id, j.title, j.role_family))
+                if (family := classify_role(title)) != stored
+            ]
+            stmt = (
+                jobs_table.update()
+                .where(j.id == bindparam("row_id"))
+                .values(role_family=bindparam("family"))
+            )
+            for i in range(0, len(changed), 1000):
+                conn.execute(stmt, changed[i:i + 1000])
+        return len(changed)
 
     def count_jobs(self) -> int:
         """Return total number of discovered jobs."""
@@ -223,27 +247,23 @@ class CompanyRegistry:
         ]
         return len(matches), records
 
-    def get_jobs(
+    def _job_filters(
         self,
-        keywords: Optional[List[str]] = None,
-        provider: Optional[ATSProvider] = None,
-        limit: int = 50,
-        hide_applied: bool = False,
-        exclude_ids: Optional[set[str]] = None,
-    ) -> List[JobPosting]:
-        """Query public jobs, optionally excluding caller-owned confirmed matches."""
+        keywords: Optional[List[str]],
+        provider: Optional[ATSProvider],
+        hide_applied: bool,
+        exclude_ids: Optional[set[str]],
+    ) -> list:
+        """WHERE clauses shared by the job list and its per-family counts."""
         j = jobs_table.c
-        query = select(jobs_table)
-
+        where = []
         hidden = set(exclude_ids or ())
         if hide_applied:
             hidden.update(self._legacy_matches)
         if hidden:
-            query = query.where(j.id.not_in(sorted(hidden)))
-
+            where.append(j.id.not_in(sorted(hidden)))
         if provider:
-            query = query.where(j.provider == provider.value)
-
+            where.append(j.provider == provider.value)
         if keywords:
             clauses = []
             for kw in keywords:
@@ -253,10 +273,65 @@ class CompanyRegistry:
                     func.lower(j.location).like(pattern),
                     func.lower(j.company).like(pattern),
                 ])
-            query = query.where(or_(*clauses))
+            where.append(or_(*clauses))
+        return where
+
+    def count_jobs_by_role(
+        self,
+        keywords: Optional[List[str]] = None,
+        provider: Optional[ATSProvider] = None,
+        hide_applied: bool = False,
+        exclude_ids: Optional[set[str]] = None,
+    ) -> dict[str, int]:
+        """Jobs per role family across the whole filtered registry, largest first."""
+        j = jobs_table.c
+        family = func.coalesce(j.role_family, OTHER)
+        query = select(family, func.count()).where(
+            *self._job_filters(keywords, provider, hide_applied, exclude_ids)
+        ).group_by(family)
+        with self.engine.connect() as conn:
+            counts = {name: n for name, n in conn.execute(query)}
+        return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+    def get_jobs(
+        self,
+        keywords: Optional[List[str]] = None,
+        provider: Optional[ATSProvider] = None,
+        limit: int = 50,
+        hide_applied: bool = False,
+        exclude_ids: Optional[set[str]] = None,
+        role: Optional[str] = None,
+        sort: str = "recent",
+        offset: int = 0,
+    ) -> List[JobPosting]:
+        """Query public jobs, optionally excluding caller-owned confirmed matches.
+
+        Filtering, ordering and paging all happen in SQL, so a page is a slice of the
+        whole filtered registry rather than a filter applied to one page.
+        """
+        j = jobs_table.c
+        query = select(jobs_table).where(
+            *self._job_filters(keywords, provider, hide_applied, exclude_ids)
+        )
+        if role and role.lower() != "all":
+            query = query.where(func.coalesce(j.role_family, OTHER) == role)
 
         # Postgres sorts NULLs first under DESC and SQLite last; say which one is meant.
-        query = query.order_by(nulls_last(j.updated_at.desc()), nulls_last(j.discovered_at.desc()))
+        recent = (nulls_last(j.updated_at.desc()), nulls_last(j.discovered_at.desc()))
+        # A board whose name was never recorded is shown by its slug, so it sorts by it too.
+        company = func.lower(func.coalesce(j.company, j.company_slug))
+        if sort == "company":
+            order = (company.asc(), *recent)
+        elif sort == "title":
+            order = (func.lower(j.title).asc(), *recent)
+        elif sort == "role":
+            order = (func.coalesce(j.role_family, OTHER).asc(), company.asc())
+        else:
+            order = recent
+        # The id breaks ties, so paging never repeats or skips a row between pages.
+        query = query.order_by(*order, j.id.asc())
+        if offset:
+            query = query.offset(offset)
         if limit:
             query = query.limit(limit)
 

@@ -25,6 +25,9 @@ ROLE_FAMILIES: List[tuple[str, str]] = [
     ("Design", r"\b(design\w*|\bux\b|user experience)\b"),
     ("Finance", r"\b(investment|banking|financ\w*|accounting|audit\w*)\b"),
     ("Consulting", r"\b(consult\w*|strategy|advisory)\b"),
+    # Named engineering disciplines that are not software. Workday boards are full of them,
+    # and without this family every "Mechanical Engineer Intern" read as software.
+    ("Other Engineering", r"^(?!.*\bsoftware\b).*\b(mechanical|chemical|chemist|civil|industrial|manufacturing|aero\w*|process engineer\w*|project engineer\w*|materials|biomedical|environmental|structural|nuclear|petroleum|quality engineer\w*|field engineer\w*|mechatronics|packaging engineer\w*|facilities)\b"),
     ("Software Engineering", r"\b(software|swe|engineer|engineering|developer|programmer|full[\s-]?stack)\b"),
 ]
 

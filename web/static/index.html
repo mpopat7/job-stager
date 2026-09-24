@@ -88,7 +88,7 @@
 
     <!-- COUNTS -->
     <section class="flex items-center gap-4 px-3 py-2 bg-[#121215] border border-[#27272a] rounded text-xs font-mono text-[#71717a]">
-      <span>Active <span class="text-white font-semibold" id="stat-fresh">—</span></span>
+      <span title="Every internship posting found so far. Closed postings are not removed yet, so this only grows.">Postings <span class="text-white font-semibold" id="stat-fresh">—</span></span>
       <span>Applied <span class="text-amber-400 font-semibold" id="stat-applied">—</span></span>
       <span>Companies <span class="text-white font-semibold" id="stat-companies">—</span></span>
     </section>
@@ -183,9 +183,16 @@
     <!-- OPPORTUNITIES LIST CONTAINER -->
     <section class="space-y-2" id="jobs-container">
       <div class="p-12 text-center text-[#71717a] space-y-2 bg-[#121215] border border-[#27272a] rounded">
-        <p class="text-xs font-mono text-[#a1a1aa]">Loading listings from local database...</p>
+        <p class="text-xs font-mono text-[#a1a1aa]">Loading listings...</p>
       </div>
     </section>
+    <div id="jobs-more" class="hidden flex items-center justify-between gap-3 px-3 py-2 text-xs font-mono text-[#71717a]">
+      <span id="jobs-shown"></span>
+      <button id="jobs-more-btn" onclick="fetchJobs(true)"
+        class="bg-[#09090b] hover:bg-[#18181b] text-[#a1a1aa] hover:text-white border border-[#27272a] hover:border-zinc-600 px-3 py-1 rounded text-xs font-medium transition cursor-pointer">
+        Load more
+      </button>
+    </div>
     </div><!-- /panel-jobs -->
 
     <div id="panel-matches" role="tabpanel" aria-labelledby="tab-matches" class="tab-panel hidden space-y-3">
@@ -249,7 +256,7 @@
           <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Phone</span>
             <input id="ct-phone" type="tel" autocomplete="tel" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" /></label>
           <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Location</span>
-            <input id="ct-location" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="Bloomington, IN" /></label>
+            <input id="ct-location" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="City, ST" /></label>
         </div>
         <div class="pt-3 border-t border-[#27272a] flex items-center justify-between gap-3">
           <span class="text-[11px] text-[#71717a] font-mono" id="contact-status">Blank fields get flagged, not guessed.</span>
@@ -280,10 +287,10 @@
         <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">School</span>
           <input id="ed-school" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" /></label>
         <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Degree</span>
-          <input id="ed-degree" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="B.S. Data Science and Computer Science" /></label>
+          <input id="ed-degree" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="B.S. Computer Science" /></label>
         <div class="grid grid-cols-3 gap-3">
           <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Major</span>
-            <input id="ed-major" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="Data Science" /></label>
+            <input id="ed-major" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="Computer Science" /></label>
           <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Second major</span>
             <input id="ed-major2" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="Computer Science" /></label>
           <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Minor</span>
@@ -295,7 +302,7 @@
           <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Grad year</span>
             <input id="ed-gradyear" type="number" min="2020" max="2040" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="2028" /></label>
           <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">GPA</span>
-            <input id="ed-gpa" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="3.81" /></label>
+            <input id="ed-gpa" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="3.50" /></label>
         </div>
         <div class="pt-3 border-t border-[#27272a] flex items-center justify-between gap-3">
           <span class="text-[11px] text-[#71717a] font-mono" id="education-status">Blank fields get flagged, not guessed.</span>
@@ -321,7 +328,7 @@
         <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Work model, best first</span>
           <input id="pf-work" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="Hybrid, Onsite, Remote" /></label>
         <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Office locations, best first</span>
-          <input id="pf-locs" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="Houston, Austin, New York" /></label>
+          <input id="pf-locs" class="w-full bg-[#09090b] border border-[#27272a] rounded px-2 py-1.5 text-white font-mono text-xs" placeholder="New York, Seattle, Remote" /></label>
 
         <div class="grid grid-cols-2 gap-3">
           <label class="space-y-1 block"><span class="text-[#71717a] font-mono text-[11px]">Street</span>
@@ -605,7 +612,7 @@
 
     function handleSearchDebounced() {
       clearTimeout(searchDebounceTimer);
-      searchDebounceTimer = setTimeout(fetchJobs, 250);
+      searchDebounceTimer = setTimeout(() => fetchJobs(), 250);
     }
 
     // One event, one message, both surfaces. Writing the log line and the toast
@@ -655,27 +662,50 @@
       }
     }
 
-    async function fetchJobs() {
+    const JOBS_PAGE = 50;
+    let jobsLoaded = [];
+
+    // `append` fetches the next page of the same query; anything else starts over, since
+    // a changed filter, search or sort makes the pages already on screen a different list.
+    async function fetchJobs(append = false) {
       const q = document.getElementById('search-input').value.trim();
       const container = document.getElementById('jobs-container');
+      const offset = append ? jobsLoaded.length : 0;
 
-      let url = `/api/jobs?limit=50&hide_applied=${hideApplied}`
+      let url = `/api/jobs?limit=${JOBS_PAGE}&offset=${offset}&hide_applied=${hideApplied}`
         + `&role=${encodeURIComponent(currentRole)}&sort=${encodeURIComponent(currentSort)}`;
       if (q) url += `&q=${encodeURIComponent(q)}`;
       if (currentProvider !== 'all') url += `&provider=${encodeURIComponent(currentProvider)}`;
 
+      const moreBtn = document.getElementById('jobs-more-btn');
+      if (append && moreBtn) { moreBtn.disabled = true; moreBtn.textContent = 'Loading...'; }
       try {
         const res = await fetch(url);
         const data = await res.json();
+        jobsLoaded = append ? jobsLoaded.concat(data.jobs) : data.jobs;
         renderRoleOptions(data.role_counts);
-        renderJobs(data.jobs);
+        renderJobs(jobsLoaded);
+        renderJobsFooter(data.total);
       } catch (err) {
         container.innerHTML = `
           <div class="p-6 text-center text-red-400 text-xs font-mono bg-[#121215] border border-red-900/50 rounded">
-            [ERROR] Failed to query SQLite database.
+            [ERROR] Failed to load listings.
           </div>
         `;
+      } finally {
+        if (moreBtn) { moreBtn.disabled = false; moreBtn.textContent = 'Load more'; }
       }
+    }
+
+    function renderJobsFooter(total) {
+      const footer = document.getElementById('jobs-more');
+      if (!footer) return;
+      const shown = jobsLoaded.length;
+      document.getElementById('jobs-shown').textContent =
+        `Showing ${shown.toLocaleString()} of ${Number(total || 0).toLocaleString()}`;
+      document.getElementById('jobs-more-btn').classList.toggle('hidden', shown >= (total || 0));
+      footer.classList.toggle('hidden', !shown);
+      footer.classList.toggle('flex', !!shown);
     }
 
     function getAtsBadge(provider) {
@@ -1165,6 +1195,7 @@
         if (!res.ok) { status.textContent = data.detail || 'Save failed.'; return; }
         prefsCache = data.preferences;
         status.textContent = 'Saved.';
+        markSettingsGaps();
       } catch (err) {
         status.textContent = 'Save failed.';
       }
@@ -1176,7 +1207,7 @@
     // ---- Education ---------------------------------------------------------
     let educationCache = null;
 
-    // "Data Science and Computer Science" is two majors in one stored string.
+    // "Mathematics and Economics" is two majors in one stored string.
     // Split on the first "and" so each gets its own field; saving joins them back.
     function splitMajors(major) {
       const parts = String(major || '').split(/\s+and\s+/i);
@@ -1356,18 +1387,28 @@
       boot();
     }
 
-    // Flag incomplete preferences on the tab itself, without opening it.
+    // Flag incomplete preferences on the tab itself, without opening it. The tooltip says
+    // which fields, and a save re-runs this so the mark clears as soon as they are filled.
     async function markSettingsGaps() {
       try {
         const res = await fetch('/api/preferences');
         if (!res.ok) return;
         const p = await res.json();
-        const missing = !p.address?.street || !p.address?.postal_code
-          || !p.availability?.start_date || !(p.work_model_ranked || []).length;
+        const missing = [
+          [!p.address?.street, 'street address'],
+          [!p.address?.postal_code, 'postal code'],
+          [!p.availability?.start_date, 'availability start date'],
+          [!(p.work_model_ranked || []).length, 'work model'],
+        ].filter(([gap]) => gap).map(([, label]) => label);
         const badge = document.getElementById('settings-gap-badge');
-        if (badge && missing) badge.classList.remove('hidden');
+        if (!badge) return;
+        badge.classList.toggle('hidden', !missing.length);
+        badge.title = missing.length
+          ? `Applications ask for these and your profile doesn't have them yet: ${missing.join(', ')}.`
+          : '';
       } catch (err) { /* signed out */ }
     }
+
 
   
     // ---- Tabs --------------------------------------------------------------

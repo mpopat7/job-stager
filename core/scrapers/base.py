@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 import re
 from typing import Any, Dict, List, Optional
@@ -126,6 +126,35 @@ def detect_is_internship(title: str, department: Optional[str] = None) -> bool:
     """Detect whether a job posting is an internship based on title and department."""
     target = f"{title} {department or ''}".lower()
     return any(re.search(r"\b" + re.escape(kw) + r"\b", target) for kw in INTERNSHIP_KEYWORDS)
+
+
+_RELATIVE_POSTED = re.compile(r"posted\s+(today|yesterday|(\d+)\+?\s+days?\s+ago)", re.I)
+
+
+def normalize_posted(value: Any, seen: Optional[date] = None) -> Optional[str]:
+    """Turn whatever a board calls its posting date into ISO text, or None.
+
+    `updated_at` is sorted as text, so every value has to start with a YYYY-MM-DD for the
+    newest-first order to mean anything. Boards disagree: Lever sends epoch milliseconds,
+    Workday sends "Posted 3 Days Ago" relative to the moment it was read, and a few Workday
+    tenants put something else entirely in that field. `seen` is the day the relative
+    phrase was read; "30+ Days Ago" becomes 30, the most it says.
+    """
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if re.fullmatch(r"\d{10}(\d{3})?", text):
+        seconds = int(text) / (1000 if len(text) == 13 else 1)
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).date().isoformat()
+    if re.match(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+    m = _RELATIVE_POSTED.search(text)
+    if m:
+        seen = seen or datetime.now(timezone.utc).date()
+        phrase = m.group(1).lower()
+        days = 0 if phrase == "today" else 1 if phrase == "yesterday" else int(m.group(2))
+        return (seen - timedelta(days=days)).isoformat()
+    return None
 
 
 class BaseScraper(ABC):

@@ -123,3 +123,57 @@ def test_a_posting_found_by_feed_and_scan_is_stored_once(tmp_path):
     job = registry.find_job(url=url)
     assert job["id"] == f"workday:{slug}:3b7e5b89-uuid"
     assert job["title"] == "Software Intern (Summer 2027)"
+
+
+def test_normalize_posted_makes_every_board_date_sortable():
+    from datetime import date
+    from core.scrapers.base import normalize_posted
+
+    seen = date(2026, 9, 24)
+    assert normalize_posted("Posted Today", seen) == "2026-09-24"
+    assert normalize_posted("Posted Yesterday", seen) == "2026-09-23"
+    assert normalize_posted("Posted 3 Days Ago", seen) == "2026-09-21"
+    assert normalize_posted("Posted 30+ Days Ago", seen) == "2026-08-25"
+    assert normalize_posted("1788371280643") == "2026-09-02"
+    assert normalize_posted("2026-09-01T12:00:00Z") == "2026-09-01T12:00:00Z"
+    # A Workday tenant that puts a location in the date field sorts as no date, not first.
+    assert normalize_posted("Tempe, AZ") is None
+    assert normalize_posted(None) is None
+
+
+def test_role_filter_and_counts_cover_the_whole_registry_not_one_page(tmp_path):
+    """The Jobs tab used to fetch 50 rows and filter those, so a rare family read as 0."""
+    reg = CompanyRegistry(tmp_path / "roles.db")
+
+    def job(i, title, posted):
+        url = f"https://jobs.ashbyhq.com/acme/{i}"
+        return JobPosting(id=str(i), title=title, company="Acme", company_slug="acme",
+                          location="Remote", url=url, apply_url=url,
+                          provider=ATSProvider.ASHBY, is_internship=True, updated_at=posted)
+
+    # 60 recent marketing roles bury 3 older software roles past the first page.
+    reg.upsert_jobs([job(i, "Marketing Intern", "Posted Today") for i in range(60)]
+                    + [job(100 + i, "Software Engineer Intern", "2026-01-01") for i in range(3)])
+
+    counts = reg.count_jobs_by_role()
+    assert counts["Software Engineering"] == 3
+    assert sum(counts.values()) == 63
+    swe = reg.get_jobs(role="Software Engineering", limit=50)
+    assert [j.title for j in swe] == ["Software Engineer Intern"] * 3
+
+    # Paging walks the full list once, newest first, with no repeats.
+    first = reg.get_jobs(limit=50)
+    rest = reg.get_jobs(limit=50, offset=50)
+    ids = [j.id for j in first + rest]
+    assert len(ids) == len(set(ids)) == 63
+    assert first[0].title == "Marketing Intern"
+    assert rest[-1].title == "Software Engineer Intern"
+
+
+def test_named_engineering_disciplines_are_not_software():
+    from core.registry.roles import classify_role
+
+    assert classify_role("2027 Mechanical Engineer Intern") == "Other Engineering"
+    assert classify_role("Chemist/Chemical Engineer Intern") == "Other Engineering"
+    assert classify_role("Software Quality Engineer Intern") == "Software Engineering"
+    assert classify_role("Engineering Intern") == "Software Engineering"

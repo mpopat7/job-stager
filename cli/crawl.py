@@ -41,6 +41,13 @@ async def crawl(concurrency: int) -> int:
         logger.exception(f"Board scan failed: {err}")
         failures += 1
 
+    try:
+        # Cheap when nothing changed: only rows whose family differs are written.
+        print(f"Role families updated on {registry.reclassify_roles()} jobs.")
+    except Exception as err:
+        logger.exception(f"Reclassifying roles failed: {err}")
+        failures += 1
+
     print(f"Registry now holds {registry.count_companies()} companies and {registry.count_jobs()} jobs.")
     return 1 if failures else 0
 
