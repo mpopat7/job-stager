@@ -5,6 +5,7 @@
 !uv.lock
 !.python-version
 !alembic.ini
+!README.md
 !core
 !cli
 !web

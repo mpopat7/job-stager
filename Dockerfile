@@ -9,7 +9,7 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1
 COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY alembic.ini ./
+COPY alembic.ini README.md ./
 COPY core core
 COPY cli cli
 COPY web web
